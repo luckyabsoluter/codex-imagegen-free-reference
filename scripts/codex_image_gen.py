@@ -167,10 +167,9 @@ def _validate_tool_options(args: argparse.Namespace) -> None:
     if args.input_fidelity:
         if not args.image_model:
             _die("--input-fidelity requires an explicit --image-model.")
-        if (
-            args.image_model in UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS
-            or _is_gpt_image_2_model(args.image_model)
-        ):
+        if _is_gpt_image_2_model(args.image_model):
+            _die("gpt-image-2 always uses high-fidelity image inputs; omit --input-fidelity.")
+        if args.image_model in UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS:
             _die(f"--input-fidelity is not supported by {args.image_model}.")
 
 
@@ -449,7 +448,7 @@ def main() -> int:
     parser.add_argument("--moderation", help="Optional image moderation level: auto or low.")
     parser.add_argument("--action", help="Optional image tool action: generate, edit, or auto.")
     parser.add_argument("--partial-images", type=int, help="Number of streamed partial images to request, 0-3.")
-    parser.add_argument("--input-fidelity", help="Optional input fidelity for supported explicit image models: high or low.")
+    parser.add_argument("--input-fidelity", help="Optional input fidelity for models that allow explicit selection: high or low.")
     parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
     parser.add_argument("--instructions")
     parser.add_argument("--auth-json", help="Path to Codex auth.json. When provided, this exact file overrides automatic discovery.")

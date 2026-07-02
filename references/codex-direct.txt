@@ -31,7 +31,8 @@ The tool object can also carry optional image-generation controls:
   "output_compression": 80,
   "moderation": "low",
   "action": "generate",
-  "partial_images": 2
+  "partial_images": 2,
+  "model": "gpt-image-2"
 }
 ```
 
@@ -112,7 +113,7 @@ The Codex direct CLI exposes the Responses `image_generation` tool controls with
 - `--action generate|edit|auto`
 - `--partial-images 0..3`
 - `--image-model <gpt-image-model>`, mapped to the tool-level `model` field
-- `--input-fidelity high|low`, only with an explicit supported `--image-model`
+- `--input-fidelity high|low`, for models that allow explicit input-fidelity selection
 - `--mask <local-image>`, requiring at least one `--reference`
 
 Validation notes:
@@ -120,7 +121,7 @@ Validation notes:
 - When `--image-model` starts with `gpt-image-2`, the CLI also enforces the documented `gpt-image-2` hard constraints: max edge `<= 3840px`, both edges multiples of `16px`, long-to-short ratio `<= 3:1`, and total pixels between `655,360` and `8,294,400`.
 - For other explicit image models, the CLI performs local syntax validation only.
 - `--background transparent` requires `png` or `webp`, an explicit image model, and not `gpt-image-2*`.
-- `--input-fidelity` is rejected for known unsupported models such as `gpt-image-1-mini` and `gpt-image-2*`.
+- `--input-fidelity` requires an explicit `--image-model`; it is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>`; `--copy-to` copies only the completed final image.
 
 ## CLI examples
