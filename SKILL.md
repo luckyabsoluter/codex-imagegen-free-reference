@@ -328,7 +328,7 @@ These conventions apply only to the CLI fallback. They do not describe built-in 
 - Use `--out` or `--out-dir` to control output paths; keep filenames stable and descriptive.
 
 ### Dependencies
-Prefer `uv` for dependency management in this repo.
+It is recommended to use `uv` to install Python directly within the skill folder. However, you can also use the Python available in your existing user environment.
 
 Required Python package:
 ```bash
