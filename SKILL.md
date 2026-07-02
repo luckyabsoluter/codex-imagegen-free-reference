@@ -57,6 +57,24 @@ Fallback-only docs/resources for CLI mode:
 Local post-processing helper:
 - `$CODEX_HOME/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py`: removes a flat chroma-key background from a generated image and writes a PNG/WebP with alpha. Prefer auto-key sampling, soft matte, and despill for antialiased edges.
 
+## Python environment
+- Use the skill-local virtual environment at `$CODEX_HOME/skills/codex-imagegen-free-reference/.venv` for every Python script in this skill.
+- If the environment does not exist, create it first:
+  ```bash
+  SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference"
+  uv venv "$SKILL_ROOT/.venv"
+  ```
+- Install packages into that exact environment:
+  ```bash
+  uv pip install --python "$SKILL_ROOT/.venv/bin/python" openai pillow
+  ```
+- Run scripts with the environment's Python executable explicitly:
+  ```bash
+  "$SKILL_ROOT/.venv/bin/python" "$SKILL_ROOT/scripts/codex_image_gen.py" ...
+  ```
+- On Windows, use `$env:CODEX_HOME\skills\codex-imagegen-free-reference\.venv\Scripts\python.exe`.
+- Do not use bare `python`, `uv run python`, `uv pip install --system`, `uv tool`, a user/system interpreter, a uv-managed interpreter directly, or a project-local virtual environment for this skill.
+
 ## When to use
 - Generate a new image (concept art, product shot, cover, website hero)
 - Generate a new image using one or more reference images for style, composition, or mood
@@ -110,7 +128,7 @@ Assume the user wants a new image unless they clearly ask to change an existing 
 9. Augment the prompt based on specificity:
    - If the user's prompt is already specific and detailed, normalize it into a clear spec without adding creative requirements.
    - If the user's prompt is generic, add tasteful augmentation only when it materially improves output quality.
-10. Run `uv run python scripts/codex_image_gen.py` (or just `python` if not using uv) for Codex-auth generation, including local references.
+10. Run the skill-local interpreter for Codex-auth generation, including local references: `"$SKILL_ROOT/.venv/bin/python" "$SKILL_ROOT/scripts/codex_image_gen.py" ...`. On Windows, use the matching `.venv\Scripts\python.exe`.
 11. For transparent-output requests, follow the transparent image guidance below: generate on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the installed `$CODEX_HOME/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
 12. Inspect outputs and validate: subject, style, composition, text accuracy, and invariants/avoid items.
 13. Iterate with a single targeted change, then re-check.
@@ -130,7 +148,8 @@ Default sequence:
 3. After generation, copy the selected source image from `$CODEX_HOME/generated_images_free_reference/...` into the workspace or `tmp/imagegen/`.
 4. Run the installed helper path, not a project-relative script path:
    ```bash
-   uv run python "${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py" \
+   "${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference/.venv/bin/python" \
+     "${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py" \
      --input <source> \
      --out <final.png> \
      --auto-key border \
@@ -328,21 +347,27 @@ These conventions apply only to the CLI fallback. They do not describe built-in 
 - Use `--out` or `--out-dir` to control output paths; keep filenames stable and descriptive.
 
 ### Dependencies
-It is recommended to use `uv` to install Python directly within the skill folder. However, you can also use the Python available in your existing user environment.
+Use only the skill-local virtual environment at `$CODEX_HOME/skills/codex-imagegen-free-reference/.venv`.
+
+Create it if needed:
+```bash
+SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference"
+uv venv "$SKILL_ROOT/.venv"
+```
 
 Required Python package:
 ```bash
-uv pip install openai
+uv pip install --python "$SKILL_ROOT/.venv/bin/python" openai
 ```
 
 Required for local chroma-key removal and optional downscaling:
 ```bash
-uv pip install pillow
+uv pip install --python "$SKILL_ROOT/.venv/bin/python" pillow
 ```
 
 Portability note:
-- If you are using the installed skill outside this repo, install dependencies into that environment with its package manager.
-- In uv-managed environments, `uv pip install ...` remains the preferred path.
+- If you are using the installed skill outside this repo, still create and use `.venv` inside that installed skill directory.
+- On Windows, pass `$env:CODEX_HOME\skills\codex-imagegen-free-reference\.venv\Scripts\python.exe` to `uv pip install --python`.
 
 ### Environment
 - `OPENAI_API_KEY` must be set for live API calls.
