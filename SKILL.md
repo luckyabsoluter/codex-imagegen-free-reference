@@ -110,7 +110,7 @@ Assume the user wants a new image unless they clearly ask to change an existing 
 9. Augment the prompt based on specificity:
    - If the user's prompt is already specific and detailed, normalize it into a clear spec without adding creative requirements.
    - If the user's prompt is generic, add tasteful augmentation only when it materially improves output quality.
-10. Run `python scripts/codex_image_gen.py` for Codex-auth generation, including local references.
+10. Run `uv run python scripts/codex_image_gen.py` (or just `python` if not using uv) for Codex-auth generation, including local references.
 11. For transparent-output requests, follow the transparent image guidance below: generate on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the installed `$CODEX_HOME/skills/.system/imagegen/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
 12. Inspect outputs and validate: subject, style, composition, text accuracy, and invariants/avoid items.
 13. Iterate with a single targeted change, then re-check.
@@ -130,7 +130,7 @@ Default sequence:
 3. After generation, copy the selected source image from `$CODEX_HOME/generated_images_free_reference/...` into the workspace or `tmp/imagegen/`.
 4. Run the installed helper path, not a project-relative script path:
    ```bash
-   python "${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/remove_chroma_key.py" \
+   uv run python "${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/remove_chroma_key.py" \
      --input <source> \
      --out <final.png> \
      --auto-key border \
