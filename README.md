@@ -12,8 +12,8 @@ This project is an extension of the built-in `imagegen` skill in Codex. It intro
 ## Install
 
 ```bash
-cd ~/.codex
-git clone <repo-url> skills/codex-imagegen-free-reference
+cd ~/.codex/skills
+git clone <repo-url> codex-imagegen-free-reference
 ```
 
 Restart Codex after installation.
