@@ -1,45 +1,48 @@
 ---
-name: "imagegen"
-description: "Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas."
+name: "codex-imagegen-free-reference"
+description: "Generate or edit raster images through Codex API direct image generation with local reference-image support, Codex-auth discovery, and copy-based project output handling. Use when Codex should create a brand-new bitmap image, transform an existing image, or derive visual variants from references. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas."
 ---
 
-# Image Generation Skill
+# codex-imagegen-free-reference
 
 Generates or edits images for the current project (for example website assets, game assets, UI mockups, product mockups, wireframes, logo design, photorealistic images, or infographics).
 
 ## Top-level modes and rules
 
-This skill has exactly two top-level modes:
+This skill has exactly three top-level modes:
 
-- **Default built-in tool mode (preferred):** built-in `image_gen` tool for normal image generation, editing, and simple transparent-image requests. Does not require `OPENAI_API_KEY`.
-- **Fallback CLI mode:** `scripts/image_gen.py` CLI. Use when the user explicitly asks for the CLI/API/model path, or after the user explicitly confirms a true model-native transparency fallback with `gpt-image-1.5`. Requires `OPENAI_API_KEY`.
+- **Codex API direct mode (recommended when available):** `scripts/codex_image_gen.py` calls the Codex Responses endpoint with Codex auth and supports local reference images. It does not require `OPENAI_API_KEY`.
+- **Default built-in tool mode:** built-in `image_gen` tool for normal image generation and editing when the harness exposes it. Does not require `OPENAI_API_KEY`, but the tool is harness-provided rather than directly scriptable from this package.
+- **Fallback OpenAI Image API CLI mode:** `scripts/image_gen.py` CLI. Use when the user explicitly asks for the public OpenAI API/model path, or after the user explicitly confirms a true model-native transparency fallback with `gpt-image-1.5`. Requires `OPENAI_API_KEY`.
 
-Within CLI fallback, the CLI exposes three subcommands:
+Within Codex API direct mode, the CLI exposes one command path:
+
+- `scripts/codex_image_gen.py`
+
+Within OpenAI Image API fallback, the CLI exposes three subcommands:
 
 - `generate`
 - `edit`
 - `generate-batch`
 
 Rules:
-- Use the built-in `image_gen` tool by default for normal image generation and editing requests.
-- Do not switch to CLI fallback for ordinary quality, size, or file-path control.
-- If the user explicitly asks for a transparent image/background, stay on built-in `image_gen` first: prompt for a flat removable chroma-key background, then remove it locally with the installed helper at `$CODEX_HOME/skills/.system/imagegen/scripts/remove_chroma_key.py`.
-- Never silently switch from built-in `image_gen` or CLI `gpt-image-2` to CLI `gpt-image-1.5`. Treat this as a model/path downgrade and ask the user before doing it, unless the user has already explicitly requested `gpt-image-1.5`, `scripts/image_gen.py`, or CLI fallback.
-- If a transparent request appears too complex for clean chroma-key removal, asks for true/native transparency, or local removal fails validation, explain that true transparency requires CLI `gpt-image-1.5 --background transparent --output-format png` because `gpt-image-2` does not support `background=transparent`, then ask whether to proceed. Run the CLI fallback only after the user confirms.
-- The word `batch` by itself does not mean CLI fallback. If the user asks for many assets or says to batch-generate assets without explicitly asking for CLI/API/model controls, stay on the built-in path and issue one built-in call per requested asset or variant.
-- If the built-in tool fails or is unavailable, tell the user the CLI fallback exists and that it requires `OPENAI_API_KEY`. Proceed only if the user explicitly asks for that fallback.
-- If the user explicitly asks for CLI mode, use the bundled `scripts/image_gen.py` workflow. Do not create one-off SDK runners.
-- Never modify `scripts/image_gen.py`. If something is missing, ask the user before doing anything else.
+- Use `scripts/codex_image_gen.py` by default when Codex auth is available, especially for local reference images and project-bound output paths.
+- Use the built-in `image_gen` tool only when the harness exposes it and the task is simpler to perform in the conversation context than through the scriptable Codex API direct path.
+- Use the OpenAI Image API fallback `scripts/image_gen.py` only when the user explicitly asks for the public OpenAI API/model path or confirms a true/native transparency fallback. This path requires `OPENAI_API_KEY`.
+- Do not create one-off SDK runners for routine image generation. Use `scripts/codex_image_gen.py` for Codex-auth work or `scripts/image_gen.py` for explicit OpenAI API fallback work.
+- For Codex API direct mode, generated originals are saved under the selected Codex home's `generated_images_free_reference/`, with filenames in `<uuid>-<name>.<ext>` form. Project-local placement is done by copying the selected original with `--copy-to`. If `--auth-json` is provided, that auth file and its parent directory are used. Otherwise auth discovery checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
+- If the user explicitly asks for a transparent image/background, prefer the chroma-key workflow first; true/native transparency through OpenAI Image API fallback requires explicit user confirmation.
+- Never silently switch from Codex API direct or CLI `gpt-image-2` to CLI `gpt-image-1.5`. Treat this as a model/path downgrade and ask the user before doing it, unless the user has already explicitly requested `gpt-image-1.5`, `scripts/image_gen.py`, or OpenAI API fallback.
+- If a transparent request appears too complex for clean chroma-key removal, asks for true/native transparency, or local removal fails validation, explain that true transparency requires CLI `gpt-image-1.5 --background transparent --output-format png` because `gpt-image-2` does not support `background=transparent`, then ask whether to proceed. Run the OpenAI API fallback only after the user confirms.
+- The word `batch` by itself does not mean OpenAI API fallback. For many Codex-auth assets, run `scripts/codex_image_gen.py` once per distinct prompt or use an external job wrapper chosen by the user.
 
-Built-in save-path policy:
-- In built-in tool mode, Codex saves generated images under `$CODEX_HOME/*` by default.
-- Do not describe or rely on OS temp as the default built-in destination.
-- Do not describe or rely on a destination-path argument (if any) on the built-in `image_gen` tool. If a specific location is needed, generate first and then move or copy the selected output from `$CODEX_HOME/generated_images/...`.
-- Save-path precedence in built-in mode:
-  1. If the user names a destination, move or copy the selected output there.
-  2. If the image is meant for the current project, move or copy the final selected image into the workspace before finishing.
-  3. If the image is only for preview or brainstorming, render it inline; the underlying file can remain at the default `$CODEX_HOME/*` path.
-- Never leave a project-referenced asset only at the default `$CODEX_HOME/*` path.
+Codex API direct save-path policy:
+- Save generated originals under the selected Codex home's `generated_images_free_reference/` by default.
+- File names must combine a UUID and a human-readable name: `<uuid>-<name>.<ext>`.
+- If the user names a project destination, copy the selected output there with `--copy-to`; keep the Codex-home original as the generated source.
+- If the image is meant for the current project, copy the final selected image into the workspace before finishing.
+- If the image is only for preview or brainstorming, the file can remain under the selected Codex home's `generated_images_free_reference/`.
+- Never leave a project-referenced asset only at the default Codex-home path.
 - Do not overwrite an existing asset unless the user explicitly asked for replacement; otherwise create a sibling versioned filename such as `hero-v2.png` or `item-icon-edited.png`.
 
 Shared prompt guidance for both modes lives in `references/prompting.md` and `references/sample-prompts.md`.
@@ -92,29 +95,29 @@ Execution strategy:
 Assume the user wants a new image unless they clearly ask to change an existing one.
 
 ## Workflow
-1. Decide the top-level mode: built-in by default, including simple transparent-output requests; fallback CLI only if explicitly requested or after the user explicitly confirms a transparent-output fallback.
-2. Decide the intent: `generate` or `edit`.
+1. Decide the top-level mode: Codex API direct by default when Codex auth is available; built-in only when the harness-exposed tool is simpler; OpenAI API fallback only when explicitly requested or confirmed.
+2. Decide the intent: generate from prompt/references, or edit an existing visible/conversation image. For local file references, prefer Codex API direct with `--reference`.
 3. Decide whether the output is preview-only or meant to be consumed by the current project.
-4. Decide the execution strategy: single asset vs repeated built-in calls vs CLI `generate-batch`.
+4. Decide the execution strategy: one `scripts/codex_image_gen.py` call per distinct Codex-auth asset, built-in calls only for harness-native work, or OpenAI API `generate-batch` only after explicit fallback opt-in.
 5. Collect inputs up front: prompt(s), exact text (verbatim), constraints/avoid list, and any input images.
 6. For every input image, label its role explicitly:
    - reference image
    - edit target
    - supporting insert/style/compositing input
 7. If the edit target is only on the local filesystem and you are staying on the built-in path, inspect it with `view_image` first so the image is available in conversation context.
-8. If the user asked for a photo, illustration, sprite, product image, banner, or other explicitly raster-style asset, use `image_gen` rather than substituting SVG/HTML/CSS placeholders. If the request is for an icon, logo, or UI graphic that should match existing repo-native SVG/vector/code assets, prefer editing those directly instead.
+8. If the user asked for a photo, illustration, sprite, product image, banner, or other explicitly raster-style asset, use Codex API direct or built-in image generation rather than substituting SVG/HTML/CSS placeholders. If the request is for an icon, logo, or UI graphic that should match existing repo-native SVG/vector/code assets, prefer editing those directly instead.
 9. Augment the prompt based on specificity:
    - If the user's prompt is already specific and detailed, normalize it into a clear spec without adding creative requirements.
    - If the user's prompt is generic, add tasteful augmentation only when it materially improves output quality.
-10. Use the built-in `image_gen` tool by default.
-11. For transparent-output requests, follow the transparent image guidance below: generate with built-in `image_gen` on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the installed `$CODEX_HOME/skills/.system/imagegen/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
+10. Run `python scripts/codex_image_gen.py` for Codex-auth generation, including local references.
+11. For transparent-output requests, follow the transparent image guidance below: generate on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the installed `$CODEX_HOME/skills/.system/imagegen/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
 12. Inspect outputs and validate: subject, style, composition, text accuracy, and invariants/avoid items.
 13. Iterate with a single targeted change, then re-check.
-14. For preview-only work, render the image inline; the underlying file may remain at the default `$CODEX_HOME/generated_images/...` path.
-15. For project-bound work, move or copy the selected artifact into the workspace and update any consuming code or references. Never leave a project-referenced asset only at the default `$CODEX_HOME/generated_images/...` path.
+14. For preview-only work, the underlying file may remain at `$CODEX_HOME/generated_images_free_reference/`.
+15. For project-bound work, copy the selected artifact into the workspace with `--copy-to` and update any consuming code or references. Never leave a project-referenced asset only at the default Codex-home path.
 16. For batches or multi-asset requests, persist every requested deliverable final in the workspace unless the user explicitly asked to keep outputs preview-only. Discarded variants do not need to be kept unless requested.
-17. If the user explicitly chooses or confirms the CLI fallback, then use the fallback-only docs for model, quality, size, `input_fidelity`, masks, output format, output paths, and network setup.
-18. Always report the final saved path(s) for any workspace-bound asset(s), plus the final prompt or prompt set and whether the built-in tool or fallback CLI mode was used.
+17. If the user explicitly chooses or confirms the OpenAI API fallback, then use the fallback-only docs for model, quality, size, `input_fidelity`, masks, output format, output paths, and network setup.
+18. Always report the final saved path(s) for any workspace-bound asset(s), plus the final prompt or prompt set and whether Codex API direct, built-in, or OpenAI API fallback mode was used.
 
 ## Transparent image requests
 
@@ -123,7 +126,7 @@ Transparent-image requests still use built-in `image_gen` first. Because the bui
 Default sequence:
 1. Use built-in `image_gen` to generate the requested subject on a perfectly flat solid chroma-key background.
 2. Choose a key color that is unlikely to appear in the subject: default `#00ff00`, use `#ff00ff` for green subjects, and avoid `#0000ff` for blue subjects.
-3. After generation, move or copy the selected source image from `$CODEX_HOME/generated_images/...` into the workspace or `tmp/imagegen/`.
+3. After generation, copy the selected source image from `$CODEX_HOME/generated_images_free_reference/...` into the workspace or `tmp/imagegen/`.
 4. Run the installed helper path, not a project-relative script path:
    ```bash
    python "${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/remove_chroma_key.py" \
@@ -153,7 +156,7 @@ Do not automatically use CLI `gpt-image-1.5 --background transparent --output-fo
 Use a concise confirmation like:
 
 ```text
-This likely needs true native transparency. The default built-in path uses a chroma-key background plus local removal, but true transparency requires the CLI fallback with gpt-image-1.5 because gpt-image-2 does not support background=transparent. It also requires OPENAI_API_KEY. Should I proceed with that CLI fallback?
+This likely needs true native transparency. The default Codex API direct path uses a chroma-key background plus local removal, but true transparency requires the OpenAI API fallback with gpt-image-1.5 because gpt-image-2 does not support background=transparent. It also requires OPENAI_API_KEY. Should I proceed with that fallback?
 ```
 
 ## Prompt augmentation

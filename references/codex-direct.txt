@@ -1,0 +1,135 @@
+# Codex API direct image generation path
+
+Use this reference when the normal built-in `image_gen` tool is unavailable or when local reference-image files must be attached without exposing the agent to one-off Python snippets.
+
+## Summary
+
+The practical Codex-auth path is the Codex Responses endpoint with the built-in `image_generation` tool in the request body:
+
+```text
+https://chatgpt.com/backend-api/codex/responses
+```
+
+Required request properties:
+
+```json
+{
+  "stream": true,
+  "tools": [{ "type": "image_generation", "output_format": "png" }]
+}
+```
+
+Important observations:
+
+- The Codex endpoint rejects non-streaming requests with `Stream must be set to true`.
+- The response is SSE; generated image bytes arrive as base64 in streamed event data.
+- Local reference images can be attached as `input_image` items using `data:image/...;base64,...` URLs.
+- This path uses Codex auth automatically. If `--auth-json /path/to/auth.json` is provided, that exact auth file is used. Otherwise it checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
+- If none of those auth files is available, the CLI exits with a configuration error. It does not require `OPENAI_API_KEY`.
+
+## Why this path is recommended here
+
+The default built-in image path is convenient when the harness exposes the `image_gen` tool, but it has two practical limits for this skill package:
+
+1. It is a harness tool, not a stable script interface that this package can invoke directly.
+2. Local filesystem reference images need to be made visible to that harness context first, which is not always available from reusable CLI documentation.
+
+The fallback OpenAI Image API CLI remains useful for explicit API-key workflows, but it is not the right shape for Codex auth:
+
+- It calls `/v1/images/generations` or `/v1/images/edits` through the public OpenAI SDK.
+- It requires `OPENAI_API_KEY`.
+- Passing a Codex `access_token` as `OPENAI_API_KEY` is not the native path and can fail, especially for multipart image edit uploads.
+
+Therefore, for Codex-auth generation with local references, prefer:
+
+```text
+scripts/codex_image_gen.py
+```
+
+## Output policy
+
+The Codex API direct CLI saves generated originals under the selected Codex home:
+
+```text
+<selected-codex-home>/generated_images_free_reference/
+```
+
+Selection order:
+
+1. The parent directory of an explicit `--auth-json` path
+2. `$CODEX_HOME`
+3. `~/.codex`
+
+File names use:
+
+```text
+<uuid>-<human-readable-name>.<ext>
+```
+
+Examples:
+
+```text
+3d4a3d8c-9b8c-41fd-a79f-9866f5eb2e31-product-packshot.png
+8e5f5fb7-3f61-42a4-a90c-358512e3b6c2-landing-page-hero.png
+```
+
+Project-local placement should be done by copying the generated original:
+
+```text
+$CODEX_HOME/generated_images_free_reference/<uuid>-<name>.png
+→ ./output/imagegen/<name>.png
+```
+
+Use `--copy-to` for this. Do not make the Codex home output directory the project source of truth.
+
+## CLI examples
+
+Use ordinary `python`. Do not document environment-manager-specific wrappers here; Python installation and environment selection are user-local concerns.
+
+Generate without references:
+
+```bash
+python scripts/codex_image_gen.py \
+  --prompt "A clean product packshot on a neutral studio background" \
+  --name product-packshot \
+  --copy-to output/imagegen/product-packshot.png
+```
+
+Generate with one local reference image:
+
+```bash
+python scripts/codex_image_gen.py \
+  --reference ./references/product-photo.png \
+  --prompt "Image A is the product reference. Create a clean studio packshot with soft lighting." \
+  --name product-packshot-reference \
+  --copy-to output/imagegen/product-packshot-reference.png
+```
+
+Attach multiple references by repeating `--reference` in the exact order described by the prompt:
+
+```bash
+python scripts/codex_image_gen.py \
+  --reference ./references/product-photo.png \
+  --reference ./references/brand-style.png \
+  --prompt "Image A is the product reference. Image B is only for visual style and color direction." \
+  --name product-brand-style \
+  --copy-to output/imagegen/product-brand-style.png
+```
+
+Dry-run without network or auth validation:
+
+```bash
+python scripts/codex_image_gen.py \
+  --reference ./references/product-photo.png \
+  --prompt "Image A is the product reference." \
+  --name dry-run-example \
+  --dry-run
+```
+
+## Agent guidance
+
+- Prefer this CLI over ad-hoc embedded Python when using Codex auth and local references.
+- Keep prompts in `--prompt` or `--prompt-file`; do not generate temporary runner scripts for routine jobs.
+- Do not print auth token values.
+- Do not commit generated images or SSE logs unless the user explicitly asks.
+- Copy selected project-bound outputs into the project path with `--copy-to`.
