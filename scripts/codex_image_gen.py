@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import time
@@ -63,12 +64,114 @@ CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
-IMAGE_KEYS = {"result", "image", "b64_json", "partial_image_b64"}
+FINAL_IMAGE_KEYS = {"result", "image", "b64_json"}
+ALLOWED_ACTIONS = {"generate", "edit", "auto"}
+ALLOWED_BACKGROUNDS = {"transparent", "opaque", "auto"}
+ALLOWED_INPUT_FIDELITIES = {"high", "low"}
+ALLOWED_MODERATIONS = {"auto", "low"}
+ALLOWED_OUTPUT_FORMATS = {"png", "webp", "jpeg"}
+ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
+UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS = {"gpt-image-1-mini"}
+GPT_IMAGE_2_PREFIX = "gpt-image-2"
+GPT_IMAGE_2_MIN_PIXELS = 655_360
+GPT_IMAGE_2_MAX_PIXELS = 8_294_400
+GPT_IMAGE_2_MAX_EDGE = 3840
+GPT_IMAGE_2_MAX_RATIO = 3.0
 
 
 def _die(message: str) -> None:
     print(f"Error: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def _parse_size(size: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", size)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _is_gpt_image_2_model(model: str | None) -> bool:
+    return bool(model and model.startswith(GPT_IMAGE_2_PREFIX))
+
+
+def _validate_choice(value: str | None, allowed: set[str], option: str) -> None:
+    if value is not None and value not in allowed:
+        values = ", ".join(sorted(allowed))
+        _die(f"{option} must be one of {values}.")
+
+
+def _validate_gpt_image_2_size(size: str) -> None:
+    parsed = _parse_size(size)
+    if parsed is None:
+        _die("--size must be auto or WIDTHxHEIGHT, for example 1024x1024.")
+
+    width, height = parsed
+    max_edge = max(width, height)
+    min_edge = min(width, height)
+    total_pixels = width * height
+
+    if max_edge > GPT_IMAGE_2_MAX_EDGE:
+        _die("gpt-image-2 size maximum edge length must be less than or equal to 3840px.")
+    if width % 16 != 0 or height % 16 != 0:
+        _die("gpt-image-2 size width and height must be multiples of 16px.")
+    if max_edge / min_edge > GPT_IMAGE_2_MAX_RATIO:
+        _die("gpt-image-2 size long edge to short edge ratio must not exceed 3:1.")
+    if total_pixels < GPT_IMAGE_2_MIN_PIXELS or total_pixels > GPT_IMAGE_2_MAX_PIXELS:
+        _die(
+            "gpt-image-2 size total pixels must be at least 655,360 and no more than 8,294,400."
+        )
+
+
+def _validate_size(size: str | None, image_model: str | None) -> None:
+    if size is None:
+        return
+    if size == "auto":
+        return
+    if _is_gpt_image_2_model(image_model):
+        _validate_gpt_image_2_size(size)
+        return
+    if _parse_size(size) is None:
+        _die("--size must be auto or WIDTHxHEIGHT, for example 1024x1024.")
+
+
+def _validate_tool_options(args: argparse.Namespace) -> None:
+    _validate_choice(args.action, ALLOWED_ACTIONS, "--action")
+    _validate_choice(args.background, ALLOWED_BACKGROUNDS, "--background")
+    _validate_choice(args.input_fidelity, ALLOWED_INPUT_FIDELITIES, "--input-fidelity")
+    _validate_choice(args.moderation, ALLOWED_MODERATIONS, "--moderation")
+    _validate_choice(args.output_format, ALLOWED_OUTPUT_FORMATS, "--output-format")
+    _validate_choice(args.quality, ALLOWED_QUALITIES, "--quality")
+    _validate_size(args.size, args.image_model)
+
+    if args.output_compression is not None:
+        if args.output_compression < 0 or args.output_compression > 100:
+            _die("--output-compression must be between 0 and 100.")
+        if args.output_format not in {"jpeg", "webp"}:
+            _die("--output-compression requires --output-format jpeg or --output-format webp.")
+
+    if args.partial_images is not None and (args.partial_images < 0 or args.partial_images > 3):
+        _die("--partial-images must be between 0 and 3.")
+
+    if args.background == "transparent":
+        if args.output_format not in {"png", "webp"}:
+            _die("--background transparent requires --output-format png or --output-format webp.")
+        if not args.image_model:
+            _die("--background transparent requires an explicit --image-model that supports transparency.")
+        if _is_gpt_image_2_model(args.image_model):
+            _die("transparent backgrounds are not supported by gpt-image-2 image models.")
+
+    if args.mask and not args.reference:
+        _die("--mask requires at least one --reference image; the first reference is the edit target.")
+
+    if args.input_fidelity:
+        if not args.image_model:
+            _die("--input-fidelity requires an explicit --image-model.")
+        if (
+            args.image_model in UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS
+            or _is_gpt_image_2_model(args.image_model)
+        ):
+            _die(f"--input-fidelity is not supported by {args.image_model}.")
 
 
 def _read_prompt(prompt: str | None, prompt_file: str | None) -> str:
@@ -137,6 +240,10 @@ def _output_path(name: str | None, output_format: str, auth_json: str | None) ->
     return output_dir / f"{stem}.{suffix}"
 
 
+def _partial_output_path(final_path: Path, index: int | str) -> Path:
+    return final_path.with_name(f"{final_path.stem}-partial-{index}{final_path.suffix}")
+
+
 def _copy_result(source: Path, destination: str, *, force: bool) -> Path:
     target = Path(destination)
     if target.exists() and target.is_dir():
@@ -148,20 +255,64 @@ def _copy_result(source: Path, destination: str, *, force: bool) -> Path:
     return target
 
 
-def _scan_image_base64(value: Any) -> str | None:
+def _looks_like_image_base64(value: Any) -> bool:
+    return isinstance(value, str) and len(value) > 1000 and not value.startswith("data:")
+
+
+def _scan_final_image_base64(value: Any) -> str | None:
     if isinstance(value, dict):
         for key, nested in value.items():
-            if key in IMAGE_KEYS and isinstance(nested, str) and len(nested) > 1000:
+            if key == "partial_image_b64":
+                continue
+            if key in FINAL_IMAGE_KEYS and _looks_like_image_base64(nested):
                 return nested
-            found = _scan_image_base64(nested)
+            found = _scan_final_image_base64(nested)
             if found:
                 return found
     elif isinstance(value, list):
         for nested in value:
-            found = _scan_image_base64(nested)
+            found = _scan_final_image_base64(nested)
             if found:
                 return found
     return None
+
+
+def _partial_index(item: dict[str, Any], fallback: int) -> int | str:
+    value = item.get("partial_image_index")
+    if isinstance(value, int) and 0 <= value <= 3:
+        return value
+    return fallback
+
+
+def _write_partial_image(item: dict[str, Any], final_path: Path, fallback_index: int) -> bool:
+    image_b64 = item.get("partial_image_b64")
+    if not _looks_like_image_base64(image_b64):
+        return False
+    partial_path = _partial_output_path(final_path, _partial_index(item, fallback_index))
+    partial_path.write_bytes(base64.b64decode(image_b64))
+    print(f"Wrote partial {partial_path}")
+    return True
+
+
+def _build_image_tool(args: argparse.Namespace) -> dict[str, Any]:
+    tool: dict[str, Any] = {"type": "image_generation", "output_format": args.output_format}
+    optional_fields = {
+        "action": args.action,
+        "background": args.background,
+        "input_fidelity": args.input_fidelity,
+        "model": args.image_model,
+        "moderation": args.moderation,
+        "output_compression": args.output_compression,
+        "partial_images": args.partial_images,
+        "quality": args.quality,
+        "size": args.size,
+    }
+    for key, value in optional_fields.items():
+        if value is not None:
+            tool[key] = value
+    if args.mask:
+        tool["input_image_mask"] = {"image_url": _data_url(Path(args.mask))}
+    return tool
 
 
 def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
@@ -174,7 +325,7 @@ def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
         "model": args.model,
         "instructions": args.instructions or "",
         "input": [{"role": "user", "content": content}],
-        "tools": [{"type": "image_generation", "output_format": args.output_format}],
+        "tools": [_build_image_tool(args)],
         "tool_choice": "auto",
         "parallel_tool_calls": False,
         "stream": True,
@@ -183,7 +334,41 @@ def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
     }
 
 
-def _stream_image(payload: dict[str, Any], token: str, account_id: str | None, log_path: Path | None) -> bytes:
+def _redact_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    preview = dict(payload)
+    preview["input"] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    **item,
+                    "image_url": "data:<redacted>" if item.get("type") == "input_image" else item.get("image_url"),
+                }
+                if item.get("type") == "input_image"
+                else item
+                for item in payload["input"][0]["content"]
+            ],
+        }
+    ]
+    preview_tools = []
+    for tool in payload.get("tools", []):
+        redacted_tool = dict(tool)
+        if "input_image_mask" in redacted_tool:
+            redacted_tool["input_image_mask"] = {"image_url": "data:<redacted>"}
+        preview_tools.append(redacted_tool)
+    preview["tools"] = preview_tools
+    return preview
+
+
+def _stream_image(
+    payload: dict[str, Any],
+    token: str,
+    account_id: str | None,
+    log_path: Path | None,
+    final_path: Path,
+    *,
+    save_partials: bool,
+) -> bytes:
     headers = {
         "Authorization": "Bearer " + token,
         "Content-Type": "application/json",
@@ -208,6 +393,7 @@ def _stream_image(payload: dict[str, Any], token: str, account_id: str | None, l
         _die(f"Codex Responses request failed: {exc}")
 
     log_handle = None
+    partial_count = 0
     try:
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,7 +411,15 @@ def _stream_image(payload: dict[str, Any], token: str, account_id: str | None, l
                 item = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            image_b64 = _scan_image_base64(item)
+            if (
+                save_partials
+                and isinstance(item, dict)
+                and item.get("type") == "response.image_generation_call.partial_image"
+            ):
+                partial_count += 1
+                _write_partial_image(item, final_path, partial_count)
+                continue
+            image_b64 = _scan_final_image_base64(item)
             if image_b64:
                 return base64.b64decode(image_b64)
     finally:
@@ -246,39 +440,43 @@ def main() -> int:
     parser.add_argument("--copy-to", help="Optional project-local file or directory to receive a copied result.")
     parser.add_argument("--force", action="store_true", help="Allow overwriting the --copy-to target.")
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--output-format", default=DEFAULT_OUTPUT_FORMAT, choices=["png", "webp", "jpeg"])
+    parser.add_argument("--image-model", help="Optional GPT Image model for the image_generation tool.")
+    parser.add_argument("--output-format", default=DEFAULT_OUTPUT_FORMAT)
+    parser.add_argument("--size", help="Optional image size, such as auto, 1024x1024, or 2048x1152.")
+    parser.add_argument("--quality", help="Optional rendering quality: low, medium, high, or auto.")
+    parser.add_argument("--background", help="Optional background behavior: transparent, opaque, or auto.")
+    parser.add_argument("--output-compression", type=int, help="Compression level 0-100 for JPEG and WebP outputs.")
+    parser.add_argument("--moderation", help="Optional image moderation level: auto or low.")
+    parser.add_argument("--action", help="Optional image tool action: generate, edit, or auto.")
+    parser.add_argument("--partial-images", type=int, help="Number of streamed partial images to request, 0-3.")
+    parser.add_argument("--input-fidelity", help="Optional input fidelity for supported explicit image models: high or low.")
+    parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
     parser.add_argument("--instructions")
     parser.add_argument("--auth-json", help="Path to Codex auth.json. When provided, this exact file overrides automatic discovery.")
     parser.add_argument("--log", help="Optional path for the raw SSE log. Do not commit logs unless reviewed.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    _validate_tool_options(args)
     prompt = _read_prompt(args.prompt, args.prompt_file)
     out_path = _output_path(args.name or prompt, args.output_format, args.auth_json)
     payload = _build_payload(args, prompt)
 
     if args.dry_run:
-        preview = dict(payload)
-        preview["input"] = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        **item,
-                        "image_url": "data:<redacted>" if item.get("type") == "input_image" else item.get("image_url"),
-                    }
-                    if item.get("type") == "input_image"
-                    else item
-                    for item in payload["input"][0]["content"]
-                ],
-            }
-        ]
+        preview = _redact_preview_payload(payload)
         print(json.dumps({"endpoint": CODEX_RESPONSES_URL, "output": str(out_path), **preview}, ensure_ascii=False, indent=2))
         return 0
 
     token, account_id = _read_codex_auth(args.auth_json)
     started = time.time()
-    image_bytes = _stream_image(payload, token, account_id, Path(args.log) if args.log else None)
+    image_bytes = _stream_image(
+        payload,
+        token,
+        account_id,
+        Path(args.log) if args.log else None,
+        out_path,
+        save_partials=bool(args.partial_images),
+    )
     out_path.write_bytes(image_bytes)
     print(f"Wrote {out_path}")
     if args.copy_to:

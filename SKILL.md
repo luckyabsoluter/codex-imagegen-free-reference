@@ -27,13 +27,14 @@ Within OpenAI Image API fallback, the CLI exposes three subcommands:
 
 Rules:
 - Use `scripts/codex_image_gen.py` by default when Codex auth is available, especially for local reference images and project-bound output paths.
+- Codex API direct mode exposes `image_generation` tool controls through `scripts/codex_image_gen.py`: `--size`, `--quality`, `--background`, `--output-format`, `--output-compression`, `--moderation`, `--action`, `--partial-images`, `--image-model`, `--input-fidelity`, and `--mask`.
 - Use the built-in `image_gen` tool only when the harness exposes it and the task is simpler to perform in the conversation context than through the scriptable Codex API direct path.
 - Use the OpenAI Image API fallback `scripts/image_gen.py` only when the user explicitly asks for the public OpenAI API/model path or confirms a true/native transparency fallback. This path requires `OPENAI_API_KEY`.
 - Do not create one-off SDK runners for routine image generation. Use `scripts/codex_image_gen.py` for Codex-auth work or `scripts/image_gen.py` for explicit OpenAI API fallback work.
 - For Codex API direct mode, generated originals are saved under the selected Codex home's `generated_images_free_reference/`, with filenames in `<uuid>-<name>.<ext>` form. Project-local placement is done by copying the selected original with `--copy-to`. If `--auth-json` is provided, that auth file and its parent directory are used. Otherwise auth discovery checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
-- If the user explicitly asks for a transparent image/background, prefer the chroma-key workflow first; true/native transparency through OpenAI Image API fallback requires explicit user confirmation.
+- If the user explicitly asks for a transparent image/background, prefer the chroma-key workflow first. Native transparency requires an explicit supported image model plus `--background transparent`, or the OpenAI Image API fallback after explicit user confirmation.
 - Never silently switch from Codex API direct or CLI `gpt-image-2` to CLI `gpt-image-1.5`. Treat this as a model/path downgrade and ask the user before doing it, unless the user has already explicitly requested `gpt-image-1.5`, `scripts/image_gen.py`, or OpenAI API fallback.
-- If a transparent request appears too complex for clean chroma-key removal, asks for true/native transparency, or local removal fails validation, explain that true transparency requires CLI `gpt-image-1.5 --background transparent --output-format png` because `gpt-image-2` does not support `background=transparent`, then ask whether to proceed. Run the OpenAI API fallback only after the user confirms.
+- If a transparent request appears too complex for clean chroma-key removal, asks for true/native transparency, or local removal fails validation, explain that native transparency requires an explicit supported image model with `--background transparent` and a transparent-capable output format. Use the OpenAI API fallback only after the user confirms that API-key path.
 - The word `batch` by itself does not mean OpenAI API fallback. For many Codex-auth assets, run `scripts/codex_image_gen.py` once per distinct prompt or use an external job wrapper chosen by the user.
 
 Codex API direct save-path policy:
@@ -116,7 +117,7 @@ Assume the user wants a new image unless they clearly ask to change an existing 
 14. For preview-only work, the underlying file may remain at `$CODEX_HOME/generated_images_free_reference/`.
 15. For project-bound work, copy the selected artifact into the workspace with `--copy-to` and update any consuming code or references. Never leave a project-referenced asset only at the default Codex-home path.
 16. For batches or multi-asset requests, persist every requested deliverable final in the workspace unless the user explicitly asked to keep outputs preview-only. Discarded variants do not need to be kept unless requested.
-17. If the user explicitly chooses or confirms the OpenAI API fallback, then use the fallback-only docs for model, quality, size, `input_fidelity`, masks, output format, output paths, and network setup.
+17. For Codex API direct controls such as model, quality, size, `input_fidelity`, masks, output format, compression, and partial images, use `references/codex-direct.txt`. If the user explicitly chooses or confirms the OpenAI API fallback, use the fallback-only docs for API-key setup and fallback CLI behavior.
 18. Always report the final saved path(s) for any workspace-bound asset(s), plus the final prompt or prompt set and whether Codex API direct, built-in, or OpenAI API fallback mode was used.
 
 ## Transparent image requests
@@ -151,12 +152,12 @@ Do not use #00ff00 anywhere in the subject.
 No cast shadow, no contact shadow, no reflection, no watermark, and no text unless explicitly requested.
 ```
 
-Do not automatically use CLI `gpt-image-1.5 --background transparent --output-format png` instead of chroma keying. Ask the user first when the user asks for true/native transparency, when local removal fails validation, or when the requested image is complex: hair, fur, feathers, smoke, glass, liquids, translucent materials, reflective objects, soft shadows, realistic product grounding, or subject colors that conflict with all practical key colors.
+Do not automatically use native transparency instead of chroma keying. Ask the user first when the user asks for true/native transparency, when local removal fails validation, or when the requested image is complex: hair, fur, feathers, smoke, glass, liquids, translucent materials, reflective objects, soft shadows, realistic product grounding, or subject colors that conflict with all practical key colors.
 
 Use a concise confirmation like:
 
 ```text
-This likely needs true native transparency. The default Codex API direct path uses a chroma-key background plus local removal, but true transparency requires the OpenAI API fallback with gpt-image-1.5 because gpt-image-2 does not support background=transparent. It also requires OPENAI_API_KEY. Should I proceed with that fallback?
+This likely needs true native transparency. The default path uses a chroma-key background plus local removal, but native transparency requires an explicit supported image model, `--background transparent`, and PNG or WebP output. Should I use that native transparency path instead?
 ```
 
 ## Prompt augmentation
@@ -233,8 +234,8 @@ Avoid: <negative constraints>
 
 Notes:
 - `Asset type` and `Input images` are prompt scaffolding, not dedicated CLI flags.
-- `Scene/backdrop` refers to the visual setting. It is not the same as the fallback CLI `background` parameter, which controls output transparency behavior.
-- Fallback-only execution notes such as `Quality:`, `Input fidelity:`, masks, output format, and output paths belong in the CLI path only. Do not treat them as built-in `image_gen` tool arguments.
+- `Scene/backdrop` refers to the visual setting. It is not the same as an execution `background` parameter, which controls output transparency behavior.
+- Execution notes such as `Quality:`, `Input fidelity:`, masks, output format, compression, partial images, and output paths belong to the selected execution path. They are supported by the Codex direct CLI and fallback CLI where documented, but they are not built-in `image_gen` tool arguments.
 
 Augmentation rules:
 - Keep it short.
@@ -275,14 +276,25 @@ Constraints: change only the background; keep the product and its edges unchange
 - Iterate with single-change follow-ups.
 - If the prompt is generic, add only the extra detail that will materially help.
 - If the prompt is already detailed, normalize it instead of expanding it.
-- For CLI fallback only, see `references/cli.md` and `references/image-api.md` for model, `quality`, `input_fidelity`, masks, output format, and output-path guidance.
-- For transparent images, use the built-in-first chroma-key workflow unless the request is complex enough to need true CLI transparency; ask before switching to CLI `gpt-image-1.5`.
+- For Codex API direct controls, see `references/codex-direct.txt`. For CLI fallback only, see `references/cli.md` and `references/image-api.md` for API-key-backed behavior.
+- For transparent images, use the built-in-first chroma-key workflow unless the request explicitly needs native transparency. Native transparency requires either an explicit supported direct `--image-model` plus `--background transparent`, or confirmation before switching to CLI `gpt-image-1.5`.
 
 More principles shared by both modes: `references/prompting.md`.
 Copy/paste specs shared by both modes: `references/sample-prompts.md`.
 
 ## Guidance by asset type
 Asset-type templates (website assets, game assets, wireframes, logo) are consolidated in `references/sample-prompts.md`.
+
+## Codex API direct image options
+
+The Codex direct CLI passes advanced options to the Responses `image_generation` tool without requiring `OPENAI_API_KEY`.
+
+- Use `--quality low` for drafts and quick iterations; use `--quality high` or `--quality auto` for final assets, dense text, diagrams, identity-sensitive edits, and high-resolution outputs.
+- Use `--size auto` or explicit sizes such as `1024x1024`, `1536x1024`, `1024x1536`, `2048x1152`, or `3840x2160` when the selected image model supports them.
+- Use `--output-format png|webp|jpeg`; use `--output-compression 0..100` only with `webp` or `jpeg`.
+- Use `--reference` repeatedly for local inputs. For an edit target plus mask, pass the edit target as the first `--reference` and the mask through `--mask`.
+- Use `--partial-images 1..3` only when streamed previews are useful; final project output still comes from the completed image.
+- Use `--image-model` only when a specific GPT Image model is needed. `--background transparent` requires an explicit transparency-capable image model and a transparent-capable output format.
 
 ## gpt-image-2 guidance for CLI fallback
 
@@ -353,6 +365,7 @@ If installation is not possible in this environment, tell the user which depende
 - `references/prompting.md`: shared prompting principles for both modes.
 - `references/sample-prompts.md`: shared copy/paste prompt recipes for both modes.
 - `references/cli.md`: fallback-only CLI usage via `scripts/image_gen.py`.
+- `references/codex-direct.txt`: Codex-auth direct CLI usage and advanced image-generation tool options.
 - `references/image-api.md`: fallback-only API/CLI parameter reference.
 - `references/codex-network.md`: fallback-only network/sandbox troubleshooting for CLI mode.
 - `scripts/image_gen.py`: fallback-only CLI implementation. Do not load or use it unless the user explicitly chooses CLI mode or explicitly confirms a transparent request's true CLI transparency fallback.
