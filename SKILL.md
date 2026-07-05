@@ -11,7 +11,7 @@ Generates or edits images for the current project (for example website assets, g
 
 This skill has exactly three top-level modes:
 
-- **Codex API direct mode (recommended when available):** `scripts/codex_image_gen.py` calls the Codex Responses endpoint with Codex auth and supports local reference images. It does not require `OPENAI_API_KEY`.
+- **Codex API direct mode (recommended when available):** `scripts/codex_image_gen.py` calls the Codex Image API generation/edit endpoints with Codex auth and supports local reference images. It does not require `OPENAI_API_KEY`. The Codex Responses hosted-tool route remains available with `--transport responses`.
 - **Default built-in tool mode:** built-in `image_gen` tool for normal image generation and editing when the harness exposes it. Does not require `OPENAI_API_KEY`, but the tool is harness-provided rather than directly scriptable from this package.
 - **Fallback OpenAI Image API CLI mode:** `scripts/image_gen.py` CLI. Use when the user explicitly asks for the public OpenAI API/model path, or after the user explicitly confirms a true model-native transparency fallback with `gpt-image-1.5`. Requires `OPENAI_API_KEY`.
 
@@ -27,11 +27,12 @@ Within OpenAI Image API fallback, the CLI exposes three subcommands:
 
 Rules:
 - Use `scripts/codex_image_gen.py` by default when Codex auth is available, especially for local reference images and project-bound output paths.
-- Codex API direct mode exposes `image_generation` tool controls through `scripts/codex_image_gen.py`: `--size`, `--quality`, `--background`, `--output-format`, `--output-compression`, `--moderation`, `--action`, `--partial-images`, `--image-model`, `--input-fidelity`, and `--mask`.
+- Codex API direct mode defaults to `https://chatgpt.com/backend-api/codex/images/generations` for prompt-only generation and `https://chatgpt.com/backend-api/codex/images/edits` when `--reference`, `--mask`, or `--action edit` is used.
+- Codex API direct mode exposes image controls through `scripts/codex_image_gen.py`: `--model`, `--image-model`, `--size`, `--quality`, `--background`, `--output-format`, `--output-compression`, `--moderation`, `--action`, `--partial-images`, `--input-fidelity`, and `--mask`. Use `--transport responses` only when the hosted Responses `image_generation` tool path is specifically needed.
 - Use the built-in `image_gen` tool only when the harness exposes it and the task is simpler to perform in the conversation context than through the scriptable Codex API direct path.
 - Use the OpenAI Image API fallback `scripts/image_gen.py` only when the user explicitly asks for the public OpenAI API/model path or confirms a true/native transparency fallback. This path requires `OPENAI_API_KEY`.
 - Do not create one-off SDK runners for routine image generation. Use `scripts/codex_image_gen.py` for Codex-auth work or `scripts/image_gen.py` for explicit OpenAI API fallback work.
-- For Codex API direct mode, generated originals and raw SSE logs are saved under the selected Codex home's `generated_images_free_reference/`. Original filenames use `<uuid>-<name>.<ext>`, and default logs use `<uuid>-<name>.<ext>.log`. Project-local placement is done by copying the selected original with `--copy-to`. If `--auth-json` is provided, that auth file and its parent directory are used. Otherwise auth discovery checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
+- For Codex API direct mode, generated originals and logs are saved under the selected Codex home's `generated_images_free_reference/`. The default Image API transport writes redacted JSON request/response logs; the optional Responses transport writes raw SSE logs. Original filenames use `<uuid>-<name>.<ext>`, and logs use `<uuid>-<name>.<ext>.log`. Project-local placement is done by copying the selected original with `--copy-to`. If `--auth-json` is provided, that auth file and its parent directory are used. Otherwise auth discovery checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
 - If the user explicitly asks for a transparent image/background, prefer the chroma-key workflow first. Native transparency requires an explicit supported image model plus `--background transparent`, or the OpenAI Image API fallback after explicit user confirmation.
 - Never silently switch from Codex API direct or CLI `gpt-image-2` to CLI `gpt-image-1.5`. Treat this as a model/path downgrade and ask the user before doing it, unless the user has already explicitly requested `gpt-image-1.5`, `scripts/image_gen.py`, or OpenAI API fallback.
 - If a transparent request appears too complex for clean chroma-key removal, asks for true/native transparency, or local removal fails validation, explain that native transparency requires an explicit supported image model with `--background transparent` and a transparent-capable output format. Use the OpenAI API fallback only after the user confirms that API-key path.
@@ -39,9 +40,9 @@ Rules:
 
 Codex API direct save-path policy:
 - Save generated originals under the selected Codex home's `generated_images_free_reference/` by default.
-- Save raw SSE logs under the same `generated_images_free_reference/` directory by default.
+- Save logs under the same `generated_images_free_reference/` directory by default. Image API logs redact base64 image payloads; Responses logs keep the raw SSE stream.
 - File names must combine a UUID and a human-readable name: `<uuid>-<name>.<ext>`.
-- Default log names must use the generated image name with `.log` appended: `<uuid>-<name>.<ext>.log`.
+- Log names must use the generated image name with `.log` appended: `<uuid>-<name>.<ext>.log`.
 - If the user names a project destination, copy the selected output there with `--copy-to`; keep the Codex-home original as the generated source.
 - If the image is meant for the current project, copy the final selected image into the workspace before finishing.
 - If the image is only for preview or brainstorming, the file can remain under the selected Codex home's `generated_images_free_reference/`.
@@ -130,7 +131,7 @@ Assume the user wants a new image unless they clearly ask to change an existing 
 9. Augment the prompt based on specificity:
    - If the user's prompt is already specific and detailed, normalize it into a clear spec without adding creative requirements.
    - If the user's prompt is generic, add tasteful augmentation only when it materially improves output quality.
-10. Run the skill-local interpreter for Codex-auth generation, including local references: `"$SKILL_ROOT/.venv/bin/python" "$SKILL_ROOT/scripts/codex_image_gen.py" ...`. On Windows, use the matching `.venv\Scripts\python.exe`.
+10. Run the skill-local interpreter for Codex-auth generation/edit, including local references: `"$SKILL_ROOT/.venv/bin/python" "$SKILL_ROOT/scripts/codex_image_gen.py" ...`. On Windows, use the matching `.venv\Scripts\python.exe`.
 11. For transparent-output requests, follow the transparent image guidance below: generate on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the installed `$CODEX_HOME/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
 12. Inspect outputs and validate: subject, style, composition, text accuracy, and invariants/avoid items.
 13. Iterate with a single targeted change, then re-check.
@@ -308,15 +309,15 @@ Asset-type templates (website assets, game assets, wireframes, logo) are consoli
 
 ## Codex API direct image options
 
-The Codex direct CLI passes advanced options to the Responses `image_generation` tool without requiring `OPENAI_API_KEY`.
+The Codex direct CLI passes advanced options to the Codex Image API by default without requiring `OPENAI_API_KEY`. Use `--transport responses` to use the hosted Responses `image_generation` tool instead.
 
 - Use `--quality low` for drafts and quick iterations; use `--quality high` or `--quality auto` for final assets, dense text, diagrams, identity-sensitive edits, and high-resolution outputs.
 - Use `--size auto` or explicit sizes such as `1024x1024`, `1536x1024`, `1024x1536`, `2048x1152`, or `3840x2160` when the selected image model supports them.
 - Use `--output-format png|webp|jpeg`; use `--output-compression 0..100` only with `webp` or `jpeg`.
 - Use `--reference` repeatedly for local inputs. For an edit target plus mask, pass the edit target as the first `--reference` and the mask through `--mask`.
 - Use `--partial-images 1..3` only when streamed previews are useful; final project output still comes from the completed image.
-- The direct CLI always writes a raw SSE log next to the generated original.
-- Use `--image-model` only when a specific GPT Image model is needed. `--background transparent` requires an explicit transparency-capable image model and a transparent-capable output format.
+- Logs are written next to the generated original. Image API logs are redacted JSON; Responses logs are raw SSE.
+- `--model` selects the model for the active transport. `--image-model` overrides `--model` for Image API calls and maps to the tool-level `model` field for `--transport responses`. `--background transparent` requires a transparency-capable image model and a transparent-capable output format.
 
 ## gpt-image-2 guidance for CLI fallback
 

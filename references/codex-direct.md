@@ -4,13 +4,39 @@ Use this reference when the normal built-in `image_gen` tool is unavailable or w
 
 ## Summary
 
-The practical Codex-auth path is the Codex Responses endpoint with the built-in `image_generation` tool in the request body:
+The practical Codex-auth path is the Codex Image API namespace. Prompt-only generation goes to:
+
+```text
+https://chatgpt.com/backend-api/codex/images/generations
+```
+
+Requests with `--reference`, `--mask`, or `--action edit` go to:
+
+```text
+https://chatgpt.com/backend-api/codex/images/edits
+```
+
+For prompt-only generation, the CLI uses the OpenAI SDK with:
+
+```text
+base_url="https://chatgpt.com/backend-api/codex"
+```
+
+and the Codex access token from `auth.json`. For image edits, the SDK's public multipart helper does not match this Codex endpoint, so the CLI sends the Codex JSON schema directly: `images: [{ "image_url": "data:image/..." }]`.
+
+The older hosted-tool route remains available when explicitly requested:
+
+```text
+python scripts/codex_image_gen.py --transport responses ...
+```
+
+That optional route calls:
 
 ```text
 https://chatgpt.com/backend-api/codex/responses
 ```
 
-Required request properties:
+with the same hosted-tool shape used by Codex itself: `ToolSpec::ImageGeneration` serializes to `{"type":"image_generation","output_format":"png"}` and is included in the Responses request. The payload looks like:
 
 ```json
 {
@@ -38,10 +64,12 @@ The tool object can also carry optional image-generation controls:
 
 Important observations:
 
-- The Codex endpoint rejects non-streaming requests with `Stream must be set to true`.
-- The response is SSE; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
-- Local reference images can be attached as `input_image` items using `data:image/...;base64,...` URLs.
-- Direct mode supports local mask images through the image tool's `input_image_mask.image_url`; the first `--reference` is the edit target when a mask is used.
+- The default Image API path uses the SDK image generation/edit methods, not the Responses `image_generation` tool.
+- The optional Responses transport rejects non-streaming requests with `Stream must be set to true`.
+- The optional Responses transport is SSE; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
+- Local reference images are attached to the default edit endpoint as JSON `image_url` objects.
+- With `--transport responses`, local reference images are attached as `input_image` items using `data:image/...;base64,...` URLs.
+- Direct mode supports local mask images. The first `--reference` is the edit target when a mask is used.
 - This path uses Codex auth automatically. If `--auth-json /path/to/auth.json` is provided, that exact auth file is used. Otherwise it checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
 - If none of those auth files is available, the CLI exits with a configuration error. It does not require `OPENAI_API_KEY`.
 
@@ -52,9 +80,9 @@ The default built-in image path is convenient when the harness exposes the `imag
 1. It is a harness tool, not a stable script interface that this package can invoke directly.
 2. Local filesystem reference images need to be made visible to that harness context first, which is not always available from reusable CLI documentation.
 
-The fallback OpenAI Image API CLI remains useful for explicit API-key workflows, but it is not the right shape for Codex auth:
+The fallback public OpenAI Image API CLI remains useful for explicit API-key workflows, but it is not the right shape for Codex auth:
 
-- It calls `/v1/images/generations` or `/v1/images/edits` through the public OpenAI SDK.
+- It calls the public `/v1/images/generations` or `/v1/images/edits` path through the public OpenAI base URL.
 - It requires `OPENAI_API_KEY`.
 - Passing a Codex `access_token` as `OPENAI_API_KEY` is not the native path and can fail, especially for multipart image edit uploads.
 
@@ -66,7 +94,7 @@ scripts/codex_image_gen.py
 
 ## Output policy
 
-The Codex API direct CLI saves generated originals and raw SSE logs under the selected Codex home:
+The Codex API direct CLI saves generated originals under the selected Codex home:
 
 ```text
 <selected-codex-home>/generated_images_free_reference/
@@ -84,7 +112,7 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
-Default log names append `.log` to the generated original name:
+Default log names append `.log` to the generated original name. Image API logs are redacted JSON request/response records; Responses logs are raw SSE:
 
 ```text
 <uuid>-<human-readable-name>.<ext>.log
@@ -109,8 +137,9 @@ Use `--copy-to` for this. Do not make the Codex home output directory the projec
 
 ## Direct tool options
 
-The Codex direct CLI exposes the Responses `image_generation` tool controls without using `OPENAI_API_KEY`.
+The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 
+- `--model <gpt-image-model>`
 - `--quality low|medium|high|auto`
 - `--size auto|WIDTHxHEIGHT`
 - `--output-format png|webp|jpeg`
@@ -119,7 +148,7 @@ The Codex direct CLI exposes the Responses `image_generation` tool controls with
 - `--moderation auto|low`
 - `--action generate|edit|auto`
 - `--partial-images 0..3`
-- `--image-model <gpt-image-model>`, mapped to the tool-level `model` field
+- `--image-model <gpt-image-model>`, overriding `--model` for the default Image API transport and mapped to the tool-level `model` field for `--transport responses`
 - `--input-fidelity high|low`, for models that allow explicit input-fidelity selection
 - `--mask <local-image>`, requiring at least one `--reference`
 
@@ -127,10 +156,10 @@ Validation notes:
 - The CLI accepts `auto` or `WIDTHxHEIGHT` for `--size` by default and lets the server decide model-specific support.
 - When `--image-model` starts with `gpt-image-2`, the CLI also enforces the documented `gpt-image-2` hard constraints: max edge `<= 3840px`, both edges multiples of `16px`, long-to-short ratio `<= 3:1`, and total pixels between `655,360` and `8,294,400`.
 - For other explicit image models, the CLI performs local syntax validation only.
-- `--background transparent` requires `png` or `webp`, an explicit image model, and not `gpt-image-2*`.
-- `--input-fidelity` requires an explicit `--image-model`; it is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
-- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>`; `--copy-to` copies only the completed final image.
-- The CLI always writes `<final-path>.log` next to the Codex-home original.
+- `--background transparent` requires `png` or `webp`, a transparency-capable image model, and not `gpt-image-2*`.
+- `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
+- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews; `--copy-to` copies only the completed final image.
+- The CLI writes `<final-path>.log` next to the Codex-home original. Image API logs redact base64 image payloads; Responses logs keep the raw SSE stream.
 
 ## CLI examples
 
@@ -219,6 +248,19 @@ python scripts/codex_image_gen.py \
   --copy-to output/imagegen/architecture-preview.png
 ```
 
+Use the optional Responses transport only when the hosted-tool path is required:
+
+```bash
+python scripts/codex_image_gen.py \
+  --transport responses \
+  --prompt "A detailed architectural visualization at golden hour" \
+  --quality high \
+  --size 2048x1152 \
+  --partial-images 2 \
+  --name architecture-preview \
+  --copy-to output/imagegen/architecture-preview.png
+```
+
 Dry-run without network or auth validation:
 
 ```bash
@@ -236,5 +278,5 @@ python scripts/codex_image_gen.py \
 - Prefer this CLI over ad-hoc embedded Python when using Codex auth and local references.
 - Keep prompts in `--prompt` or `--prompt-file`; do not generate temporary runner scripts for routine jobs.
 - Do not print auth token values.
-- Do not commit generated images or SSE logs unless the user explicitly asks.
+- Do not commit generated images or generation logs unless the user explicitly asks.
 - Copy selected project-bound outputs into the project path with `--copy-to`.

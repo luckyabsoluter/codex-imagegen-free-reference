@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Codex-auth image generation with free local reference images.
 
-This CLI calls the Codex Responses endpoint directly with the built-in
-`image_generation` tool. It uses the local Codex auth snapshot in
-`~/.codex/auth.json`, accepts local reference images as `input_image` data URLs,
-and saves generated images and raw SSE logs under
-`~/.codex/generated_images_free_reference/` by default.
+This CLI calls the Codex Image API endpoints by default using the local Codex
+auth snapshot in `~/.codex/auth.json`. Prompt-only generation uses the OpenAI
+SDK with the Codex base URL. Local reference images are sent to the edit
+endpoint as JSON `image_url` inputs. The Codex Responses hosted-tool route
+remains available through `--transport responses`. Generated images are saved
+under `~/.codex/generated_images_free_reference/` by default.
 """
 
 from __future__ import annotations
@@ -66,8 +67,12 @@ def _output_dir(auth_json: str | None) -> Path:
     return output_dir
 
 
-CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
-DEFAULT_MODEL = "gpt-5.5"
+CODEX_IMAGE_API_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_IMAGE_GENERATIONS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/generations"
+CODEX_IMAGE_EDITS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/edits"
+CODEX_RESPONSES_URL = f"{CODEX_IMAGE_API_BASE_URL}/responses"
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
+DEFAULT_RESPONSES_MODEL = "gpt-5.5"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
 FINAL_IMAGE_KEYS = {"result", "image", "b64_json"}
@@ -77,6 +82,7 @@ ALLOWED_INPUT_FIDELITIES = {"high", "low"}
 ALLOWED_MODERATIONS = {"auto", "low"}
 ALLOWED_OUTPUT_FORMATS = {"png", "webp", "jpeg"}
 ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
+ALLOWED_TRANSPORTS = {"image-api", "responses"}
 UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS = {"gpt-image-1-mini"}
 GPT_IMAGE_2_PREFIX = "gpt-image-2"
 GPT_IMAGE_2_MIN_PIXELS = 655_360
@@ -99,6 +105,18 @@ def _parse_size(size: str) -> tuple[int, int] | None:
 
 def _is_gpt_image_2_model(model: str | None) -> bool:
     return bool(model and model.startswith(GPT_IMAGE_2_PREFIX))
+
+
+def _effective_image_model(args: argparse.Namespace) -> str:
+    return args.image_model or args.model or DEFAULT_IMAGE_MODEL
+
+
+def _effective_responses_model(args: argparse.Namespace) -> str:
+    return args.model or DEFAULT_RESPONSES_MODEL
+
+
+def _uses_image_edit_endpoint(args: argparse.Namespace) -> bool:
+    return bool(args.reference or args.mask or args.action == "edit")
 
 
 def _validate_choice(value: str | None, allowed: set[str], option: str) -> None:
@@ -148,7 +166,9 @@ def _validate_tool_options(args: argparse.Namespace) -> None:
     _validate_choice(args.moderation, ALLOWED_MODERATIONS, "--moderation")
     _validate_choice(args.output_format, ALLOWED_OUTPUT_FORMATS, "--output-format")
     _validate_choice(args.quality, ALLOWED_QUALITIES, "--quality")
-    _validate_size(args.size, args.image_model)
+    _validate_choice(args.transport, ALLOWED_TRANSPORTS, "--transport")
+    image_model = _effective_image_model(args) if args.transport == "image-api" else args.image_model
+    _validate_size(args.size, image_model)
 
     if args.output_compression is not None:
         if args.output_compression < 0 or args.output_compression > 100:
@@ -162,21 +182,27 @@ def _validate_tool_options(args: argparse.Namespace) -> None:
     if args.background == "transparent":
         if args.output_format not in {"png", "webp"}:
             _die("--background transparent requires --output-format png or --output-format webp.")
-        if not args.image_model:
-            _die("--background transparent requires an explicit --image-model that supports transparency.")
-        if _is_gpt_image_2_model(args.image_model):
+        if args.transport == "responses" and not args.image_model:
+            _die("--background transparent requires an explicit --image-model with --transport responses.")
+        if _is_gpt_image_2_model(image_model):
             _die("transparent backgrounds are not supported by gpt-image-2 image models.")
 
     if args.mask and not args.reference:
         _die("--mask requires at least one --reference image; the first reference is the edit target.")
 
     if args.input_fidelity:
-        if not args.image_model:
-            _die("--input-fidelity requires an explicit --image-model.")
-        if _is_gpt_image_2_model(args.image_model):
+        if args.transport == "responses" and not args.image_model:
+            _die("--input-fidelity requires an explicit --image-model with --transport responses.")
+        if _is_gpt_image_2_model(image_model):
             _die("gpt-image-2 always uses high-fidelity image inputs; omit --input-fidelity.")
-        if args.image_model in UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS:
-            _die(f"--input-fidelity is not supported by {args.image_model}.")
+        if image_model in UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS:
+            _die(f"--input-fidelity is not supported by {image_model}.")
+
+    if args.transport == "image-api":
+        if args.instructions:
+            _die("--instructions is only supported with --transport responses.")
+        if args.action == "edit" and not args.reference:
+            _die("--action edit requires at least one --reference image with --transport image-api.")
 
 
 def _read_prompt(prompt: str | None, prompt_file: str | None) -> str:
@@ -329,7 +355,7 @@ def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
     content.append({"type": "input_text", "text": prompt})
 
     return {
-        "model": args.model,
+        "model": _effective_responses_model(args),
         "instructions": args.instructions or "",
         "input": [{"role": "user", "content": content}],
         "tools": [_build_image_tool(args)],
@@ -339,6 +365,47 @@ def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
         "store": False,
         "include": [],
     }
+
+
+def _build_image_api_options(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "model": _effective_image_model(args),
+        "prompt": prompt,
+        "output_format": args.output_format,
+        "response_format": "b64_json",
+    }
+    optional_fields = {
+        "background": args.background,
+        "input_fidelity": args.input_fidelity if _uses_image_edit_endpoint(args) else None,
+        "moderation": args.moderation,
+        "output_compression": args.output_compression,
+        "partial_images": args.partial_images,
+        "quality": args.quality,
+        "size": args.size,
+    }
+    for key, value in optional_fields.items():
+        if value is not None:
+            options[key] = value
+    if args.partial_images is not None:
+        options["stream"] = True
+    return options
+
+
+def _redact_image_api_preview(args: argparse.Namespace, options: dict[str, Any]) -> dict[str, Any]:
+    preview = dict(options)
+    if _uses_image_edit_endpoint(args):
+        preview["images"] = [str(Path(path)) for path in args.reference]
+        if args.mask:
+            preview["mask"] = str(Path(args.mask))
+    return preview
+
+
+def _build_image_api_edit_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
+    payload = _build_image_api_options(args, prompt)
+    payload["images"] = [{"image_url": _data_url(Path(reference))} for reference in args.reference]
+    if args.mask:
+        payload["mask"] = {"image_url": _data_url(Path(args.mask))}
+    return payload
 
 
 def _redact_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -436,6 +503,200 @@ def _stream_image(
     _die("No generated image was found in the streamed response.")
 
 
+def _create_codex_openai_client(token: str, account_id: str | None) -> Any:
+    try:
+        from openai import OpenAI
+    except ImportError:
+        _die("The openai package is not installed in the skill virtual environment.")
+
+    headers = {}
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    return OpenAI(
+        api_key=token,
+        base_url=CODEX_IMAGE_API_BASE_URL,
+        default_headers=headers,
+    )
+
+
+def _to_plain_data(value: Any) -> Any:
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return [_to_plain_data(item) for item in value]
+    return value
+
+
+def _image_response_bytes(response: Any) -> bytes:
+    data = getattr(response, "data", None)
+    if not data and isinstance(response, dict):
+        data = response.get("data")
+    if not data:
+        _die("No image data was returned by the Codex Image API.")
+
+    first = data[0]
+    if isinstance(first, dict):
+        image_b64 = first.get("b64_json")
+    else:
+        image_b64 = getattr(first, "b64_json", None)
+    if not _looks_like_image_base64(image_b64):
+        _die("Codex Image API response did not include b64_json image data.")
+    return base64.b64decode(image_b64)
+
+
+def _redact_image_api_log(value: Any) -> Any:
+    plain = _to_plain_data(value)
+    if isinstance(plain, dict):
+        redacted = {}
+        for key, nested in plain.items():
+            if key in {"b64_json", "image_url"} and isinstance(nested, str):
+                redacted[key] = f"<redacted {len(nested)} chars>"
+            else:
+                redacted[key] = _redact_image_api_log(nested)
+        return redacted
+    if isinstance(plain, list):
+        return [_redact_image_api_log(item) for item in plain]
+    return plain
+
+
+def _write_image_api_log(log_path: Path, payload: dict[str, Any], response: Any) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        json.dumps(
+            {
+                "request": _redact_image_api_log(payload),
+                "response": _redact_image_api_log(response),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _stream_image_api_response(stream: Any, final_path: Path, *, save_partials: bool) -> bytes:
+    partial_count = 0
+    for event in stream:
+        item = _to_plain_data(event)
+        if save_partials and isinstance(item, dict):
+            partial_b64 = item.get("partial_image_b64")
+            if not partial_b64:
+                partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
+            if _looks_like_image_base64(partial_b64):
+                partial_count += 1
+                partial_path = _partial_output_path(final_path, partial_count)
+                partial_path.write_bytes(base64.b64decode(partial_b64))
+                print(f"Wrote partial {partial_path}")
+                continue
+        image_b64 = _scan_final_image_base64(item)
+        if image_b64:
+            return base64.b64decode(image_b64)
+    _die("No generated image was found in the streamed Codex Image API response.")
+
+
+def _stream_json_image_api_response(response: Any, final_path: Path, *, save_partials: bool) -> bytes:
+    partial_count = 0
+    try:
+        for raw in response:
+            line = raw.decode("utf-8", "ignore").rstrip("\n")
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                item = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if save_partials:
+                partial_b64 = item.get("partial_image_b64") if isinstance(item, dict) else None
+                if not partial_b64 and isinstance(item, dict):
+                    partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
+                if _looks_like_image_base64(partial_b64):
+                    partial_count += 1
+                    partial_path = _partial_output_path(final_path, partial_count)
+                    partial_path.write_bytes(base64.b64decode(partial_b64))
+                    print(f"Wrote partial {partial_path}")
+                    continue
+            image_b64 = _scan_final_image_base64(item)
+            if image_b64:
+                return base64.b64decode(image_b64)
+    finally:
+        response.close()
+    _die("No generated image was found in the streamed Codex Image API response.")
+
+
+def _request_image_api_edit(
+    payload: dict[str, Any],
+    token: str,
+    account_id: str | None,
+    log_path: Path,
+) -> bytes:
+    if payload.get("stream"):
+        _die("--partial-images with --transport image-api edit is not supported; use --transport responses.")
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "User-Agent": "codex-imagegen-free-reference",
+    }
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    try:
+        import httpx
+
+        response = httpx.post(
+            CODEX_IMAGE_EDITS_URL,
+            headers=headers,
+            json=payload,
+            timeout=600,
+        )
+        if response.status_code >= 400:
+            _die(
+                f"Codex Image API edit request failed with HTTP {response.status_code}: "
+                f"{response.text[:2000]}"
+            )
+        data = response.json()
+        _write_image_api_log(log_path, payload, data)
+    except Exception as exc:
+        _die(f"Codex Image API edit request failed: {exc}")
+    return _image_response_bytes(data)
+
+
+def _run_image_api(
+    args: argparse.Namespace,
+    prompt: str,
+    token: str,
+    account_id: str | None,
+    final_path: Path,
+    log_path: Path,
+) -> bytes:
+    if _uses_image_edit_endpoint(args):
+        payload = _build_image_api_edit_payload(args, prompt)
+        return _request_image_api_edit(
+            payload,
+            token,
+            account_id,
+            log_path,
+        )
+
+    client = _create_codex_openai_client(token, account_id)
+    options = _build_image_api_options(args, prompt)
+    try:
+        response = client.images.generate(**options)
+    except Exception as exc:
+        _die(f"Codex Image API request failed: {exc}")
+
+    if options.get("stream"):
+        return _stream_image_api_response(response, final_path, save_partials=bool(args.partial_images))
+    _write_image_api_log(log_path, options, response)
+    return _image_response_bytes(response)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate images through Codex auth with optional local reference images."
@@ -446,8 +707,13 @@ def main() -> int:
     parser.add_argument("--name", help="Human-readable filename suffix used after the UUID.")
     parser.add_argument("--copy-to", help="Optional project-local file or directory to receive a copied result.")
     parser.add_argument("--force", action="store_true", help="Allow overwriting the --copy-to target.")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--image-model", help="Optional GPT Image model for the image_generation tool.")
+    parser.add_argument(
+        "--transport",
+        default="image-api",
+        help="Transport to use: image-api (default) or responses.",
+    )
+    parser.add_argument("--model", help="Model for the selected transport.")
+    parser.add_argument("--image-model", help="Optional GPT Image model; for image-api this overrides --model.")
     parser.add_argument("--output-format", default=DEFAULT_OUTPUT_FORMAT)
     parser.add_argument("--size", help="Optional image size, such as auto, 1024x1024, or 2048x1152.")
     parser.add_argument("--quality", help="Optional rendering quality: low, medium, high, or auto.")
@@ -466,34 +732,50 @@ def main() -> int:
     _validate_tool_options(args)
     prompt = _read_prompt(args.prompt, args.prompt_file)
     out_path = _output_path(args.name or prompt, args.output_format, args.auth_json)
-    payload = _build_payload(args, prompt)
 
     if args.dry_run:
-        preview = _redact_preview_payload(payload)
-        print(
-            json.dumps(
-                {
-                    "endpoint": CODEX_RESPONSES_URL,
-                    "output": str(out_path),
-                    "log": str(_log_path(out_path)),
-                    **preview,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        if args.transport == "responses":
+            payload = _build_payload(args, prompt)
+            preview = {
+                "endpoint": CODEX_RESPONSES_URL,
+                "output": str(out_path),
+                "log": str(_log_path(out_path)),
+                **_redact_preview_payload(payload),
+            }
+        else:
+            options = _build_image_api_options(args, prompt)
+            preview = {
+                "endpoint": CODEX_IMAGE_EDITS_URL
+                if _uses_image_edit_endpoint(args)
+                else CODEX_IMAGE_GENERATIONS_URL,
+                "output": str(out_path),
+                "log": str(_log_path(out_path)),
+                **_redact_image_api_preview(args, options),
+            }
+        print(json.dumps(preview, ensure_ascii=False, indent=2))
         return 0
 
     token, account_id = _read_codex_auth(args.auth_json)
     started = time.time()
-    image_bytes = _stream_image(
-        payload,
-        token,
-        account_id,
-        _log_path(out_path),
-        out_path,
-        save_partials=bool(args.partial_images),
-    )
+    if args.transport == "responses":
+        payload = _build_payload(args, prompt)
+        image_bytes = _stream_image(
+            payload,
+            token,
+            account_id,
+            _log_path(out_path),
+            out_path,
+            save_partials=bool(args.partial_images),
+        )
+    else:
+        image_bytes = _run_image_api(
+            args,
+            prompt,
+            token,
+            account_id,
+            out_path,
+            _log_path(out_path),
+        )
     out_path.write_bytes(image_bytes)
     print(f"Wrote {out_path}")
     if args.copy_to:
