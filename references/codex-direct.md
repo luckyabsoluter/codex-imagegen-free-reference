@@ -66,7 +66,7 @@ scripts/codex_image_gen.py
 
 ## Output policy
 
-The Codex API direct CLI saves generated originals under the selected Codex home:
+The Codex API direct CLI saves generated originals and raw SSE logs under the selected Codex home:
 
 ```text
 <selected-codex-home>/generated_images_free_reference/
@@ -84,11 +84,18 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
+Default log names append `.log` to the generated original name:
+
+```text
+<uuid>-<human-readable-name>.<ext>.log
+```
+
 Examples:
 
 ```text
 3d4a3d8c-9b8c-41fd-a79f-9866f5eb2e31-product-packshot.png
 8e5f5fb7-3f61-42a4-a90c-358512e3b6c2-landing-page-hero.png
+8e5f5fb7-3f61-42a4-a90c-358512e3b6c2-landing-page-hero.png.log
 ```
 
 Project-local placement should be done by copying the generated original:
@@ -123,6 +130,7 @@ Validation notes:
 - `--background transparent` requires `png` or `webp`, an explicit image model, and not `gpt-image-2*`.
 - `--input-fidelity` requires an explicit `--image-model`; it is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>`; `--copy-to` copies only the completed final image.
+- The CLI always writes `<final-path>.log` next to the Codex-home original.
 
 ## CLI examples
 

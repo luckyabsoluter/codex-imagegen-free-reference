@@ -4,8 +4,8 @@
 This CLI calls the Codex Responses endpoint directly with the built-in
 `image_generation` tool. It uses the local Codex auth snapshot in
 `~/.codex/auth.json`, accepts local reference images as `input_image` data URLs,
-and saves generated images under `~/.codex/generated_images_free_reference/` by
-default.
+and saves generated images and raw SSE logs under
+`~/.codex/generated_images_free_reference/` by default.
 """
 
 from __future__ import annotations
@@ -58,6 +58,12 @@ def _output_root(auth_json: str | None) -> Path:
     if codex_home:
         return codex_home
     return Path.home() / ".codex"
+
+
+def _output_dir(auth_json: str | None) -> Path:
+    output_dir = _output_root(auth_json) / "generated_images_free_reference"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -232,11 +238,13 @@ def _slugify(value: str) -> str:
 
 
 def _output_path(name: str | None, output_format: str, auth_json: str | None) -> Path:
-    output_dir = _output_root(auth_json) / "generated_images_free_reference"
-    output_dir.mkdir(parents=True, exist_ok=True)
     suffix = output_format.lower().lstrip(".") or DEFAULT_OUTPUT_FORMAT
     stem = f"{uuid4()}-{_slugify(name or 'image')}"
-    return output_dir / f"{stem}.{suffix}"
+    return _output_dir(auth_json) / f"{stem}.{suffix}"
+
+
+def _log_path(final_path: Path) -> Path:
+    return final_path.with_suffix(f"{final_path.suffix}.log")
 
 
 def _partial_output_path(final_path: Path, index: int | str) -> Path:
@@ -452,7 +460,6 @@ def main() -> int:
     parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
     parser.add_argument("--instructions")
     parser.add_argument("--auth-json", help="Path to Codex auth.json. When provided, this exact file overrides automatic discovery.")
-    parser.add_argument("--log", help="Optional path for the raw SSE log. Do not commit logs unless reviewed.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -463,7 +470,18 @@ def main() -> int:
 
     if args.dry_run:
         preview = _redact_preview_payload(payload)
-        print(json.dumps({"endpoint": CODEX_RESPONSES_URL, "output": str(out_path), **preview}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "endpoint": CODEX_RESPONSES_URL,
+                    "output": str(out_path),
+                    "log": str(_log_path(out_path)),
+                    **preview,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     token, account_id = _read_codex_auth(args.auth_json)
@@ -472,7 +490,7 @@ def main() -> int:
         payload,
         token,
         account_id,
-        Path(args.log) if args.log else None,
+        _log_path(out_path),
         out_path,
         save_partials=bool(args.partial_images),
     )
