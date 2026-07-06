@@ -317,14 +317,19 @@ def _partial_index(item: dict[str, Any], fallback: int) -> int | str:
     return fallback
 
 
-def _write_partial_image(item: dict[str, Any], final_path: Path, fallback_index: int) -> bool:
+def _write_partial_image(
+    item: dict[str, Any],
+    final_path: Path,
+    fallback_index: int,
+) -> tuple[Path, bytes] | None:
     image_b64 = item.get("partial_image_b64")
     if not _looks_like_image_base64(image_b64):
-        return False
+        return None
+    image_bytes = base64.b64decode(image_b64)
     partial_path = _partial_output_path(final_path, _partial_index(item, fallback_index))
-    partial_path.write_bytes(base64.b64decode(image_b64))
+    partial_path.write_bytes(image_bytes)
     print(f"Wrote partial {partial_path}")
-    return True
+    return partial_path, image_bytes
 
 
 def _build_image_tool(args: argparse.Namespace) -> dict[str, Any]:
@@ -469,7 +474,7 @@ def _stream_image(
     final_path: Path,
     *,
     save_partials: bool,
-) -> bytes:
+) -> tuple[bytes, bool]:
     headers = {
         "Authorization": "Bearer " + token,
         "Content-Type": "application/json",
@@ -495,6 +500,7 @@ def _stream_image(
 
     log_handle = None
     partial_count = 0
+    last_partial: tuple[Path, bytes] | None = None
     try:
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -518,11 +524,20 @@ def _stream_image(
                 and item.get("type") == "response.image_generation_call.partial_image"
             ):
                 partial_count += 1
-                _write_partial_image(item, final_path, partial_count)
+                written_partial = _write_partial_image(item, final_path, partial_count)
+                if written_partial:
+                    last_partial = written_partial
                 continue
             image_b64 = _scan_final_image_base64(item)
             if image_b64:
-                return base64.b64decode(image_b64)
+                image_bytes = base64.b64decode(image_b64)
+                if last_partial:
+                    partial_path, partial_bytes = last_partial
+                    if partial_bytes == image_bytes:
+                        partial_path.replace(final_path)
+                        print(f"Renamed final partial {partial_path} to {final_path}")
+                        return image_bytes, True
+                return image_bytes, False
     finally:
         if log_handle:
             log_handle.close()
@@ -784,9 +799,10 @@ def main() -> int:
 
     token, account_id = _read_codex_auth(args.auth_json)
     started = time.time()
+    final_written = False
     if args.transport == "responses":
         payload = _build_payload(args, prompt)
-        image_bytes = _stream_image(
+        image_bytes, final_written = _stream_image(
             payload,
             token,
             account_id,
@@ -803,7 +819,8 @@ def main() -> int:
             out_path,
             _log_path(out_path),
         )
-    out_path.write_bytes(image_bytes)
+    if not final_written:
+        out_path.write_bytes(image_bytes)
     print(f"Wrote {out_path}")
     if args.copy_to:
         copied = _copy_result(out_path, args.copy_to, force=args.force)

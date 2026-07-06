@@ -158,7 +158,7 @@ Validation notes:
 - For other explicit image models, the CLI performs local syntax validation only.
 - `--background transparent` requires `png` or `webp`, a transparency-capable image model, and not `gpt-image-2*`.
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
-- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews; `--copy-to` copies only the completed final image.
+- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
 - The CLI writes `<final-path>.log` next to the Codex-home original. Image API logs redact base64 image payloads; Responses logs keep SSE structure while redacting image payloads.
 
 ## CLI examples

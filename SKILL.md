@@ -315,7 +315,7 @@ The Codex direct CLI passes advanced options to the Codex Image API by default w
 - Use `--size auto` or explicit sizes such as `1024x1024`, `1536x1024`, `1024x1536`, `2048x1152`, or `3840x2160` when the selected image model supports them.
 - Use `--output-format png|webp|jpeg`; use `--output-compression 0..100` only with `webp` or `jpeg`.
 - Use `--reference` repeatedly for local inputs. For an edit target plus mask, pass the edit target as the first `--reference` and the mask through `--mask`.
-- Use `--partial-images 1..3` only when streamed previews are useful; final project output still comes from the completed image.
+- Use `--partial-images 1..3` only when streamed previews are useful; final project output still comes from the completed image. If the last partial is byte-identical to the completed image, the CLI renames that partial to the final output path.
 - Logs are written next to the generated original. Image API logs are redacted JSON; Responses logs are redacted SSE.
 - `--model` selects the model for the active transport. `--image-model` overrides `--model` for Image API calls and maps to the tool-level `model` field for `--transport responses`. `--background transparent` requires a transparency-capable image model and a transparent-capable output format.
 
