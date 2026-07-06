@@ -434,6 +434,33 @@ def _redact_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return preview
 
 
+def _redact_responses_stream_item(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted = {}
+        for key, nested in value.items():
+            if key in {"result", "image", "b64_json", "partial_image_b64", "image_url"} and isinstance(nested, str):
+                redacted[key] = f"<redacted {len(nested)} chars>"
+            else:
+                redacted[key] = _redact_responses_stream_item(nested)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_responses_stream_item(item) for item in value]
+    return value
+
+
+def _redact_responses_log_line(line: str) -> str:
+    if not line.startswith("data:"):
+        return line
+    data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return line
+    try:
+        item = json.loads(data)
+    except json.JSONDecodeError:
+        return line
+    return "data: " + json.dumps(_redact_responses_stream_item(item), ensure_ascii=False)
+
+
 def _stream_image(
     payload: dict[str, Any],
     token: str,
@@ -475,7 +502,7 @@ def _stream_image(
         for raw in response:
             line = raw.decode("utf-8", "ignore").rstrip("\n")
             if log_handle:
-                log_handle.write(line + "\n")
+                log_handle.write(_redact_responses_log_line(line) + "\n")
             if not line.startswith("data:"):
                 continue
             data = line[5:].strip()
