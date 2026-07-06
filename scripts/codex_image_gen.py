@@ -96,6 +96,15 @@ def _die(message: str) -> None:
     raise SystemExit(1)
 
 
+def _info(message: str) -> None:
+    print(message)
+
+
+def _debug(message: str, *, verbose: bool) -> None:
+    if verbose:
+        print(message)
+
+
 def _parse_size(size: str) -> tuple[int, int] | None:
     match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", size)
     if not match:
@@ -321,6 +330,8 @@ def _write_partial_image(
     item: dict[str, Any],
     final_path: Path,
     fallback_index: int,
+    *,
+    verbose: bool,
 ) -> tuple[Path, bytes] | None:
     image_b64 = item.get("partial_image_b64")
     if not _looks_like_image_base64(image_b64):
@@ -328,7 +339,7 @@ def _write_partial_image(
     image_bytes = base64.b64decode(image_b64)
     partial_path = _partial_output_path(final_path, _partial_index(item, fallback_index))
     partial_path.write_bytes(image_bytes)
-    print(f"Wrote partial {partial_path}")
+    _info(f"Wrote partial {partial_path}")
     return partial_path, image_bytes
 
 
@@ -474,6 +485,7 @@ def _stream_image(
     final_path: Path,
     *,
     save_partials: bool,
+    verbose: bool,
 ) -> tuple[bytes, bool]:
     headers = {
         "Authorization": "Bearer " + token,
@@ -524,7 +536,12 @@ def _stream_image(
                 and item.get("type") == "response.image_generation_call.partial_image"
             ):
                 partial_count += 1
-                written_partial = _write_partial_image(item, final_path, partial_count)
+                written_partial = _write_partial_image(
+                    item,
+                    final_path,
+                    partial_count,
+                    verbose=verbose,
+                )
                 if written_partial:
                     last_partial = written_partial
                 continue
@@ -535,7 +552,10 @@ def _stream_image(
                     partial_path, partial_bytes = last_partial
                     if partial_bytes == image_bytes:
                         partial_path.replace(final_path)
-                        print(f"Renamed final partial {partial_path} to {final_path}")
+                        _debug(
+                            f"Renamed final partial {partial_path} to {final_path}",
+                            verbose=verbose,
+                        )
                         return image_bytes, True
                 return image_bytes, False
     finally:
@@ -621,7 +641,13 @@ def _write_image_api_log(log_path: Path, payload: dict[str, Any], response: Any)
     )
 
 
-def _stream_image_api_response(stream: Any, final_path: Path, *, save_partials: bool) -> bytes:
+def _stream_image_api_response(
+    stream: Any,
+    final_path: Path,
+    *,
+    save_partials: bool,
+    verbose: bool,
+) -> bytes:
     partial_count = 0
     for event in stream:
         item = _to_plain_data(event)
@@ -633,7 +659,7 @@ def _stream_image_api_response(stream: Any, final_path: Path, *, save_partials: 
                 partial_count += 1
                 partial_path = _partial_output_path(final_path, partial_count)
                 partial_path.write_bytes(base64.b64decode(partial_b64))
-                print(f"Wrote partial {partial_path}")
+                _info(f"Wrote partial {partial_path}")
                 continue
         image_b64 = _scan_final_image_base64(item)
         if image_b64:
@@ -641,7 +667,13 @@ def _stream_image_api_response(stream: Any, final_path: Path, *, save_partials: 
     _die("No generated image was found in the streamed Codex Image API response.")
 
 
-def _stream_json_image_api_response(response: Any, final_path: Path, *, save_partials: bool) -> bytes:
+def _stream_json_image_api_response(
+    response: Any,
+    final_path: Path,
+    *,
+    save_partials: bool,
+    verbose: bool,
+) -> bytes:
     partial_count = 0
     try:
         for raw in response:
@@ -663,7 +695,7 @@ def _stream_json_image_api_response(response: Any, final_path: Path, *, save_par
                     partial_count += 1
                     partial_path = _partial_output_path(final_path, partial_count)
                     partial_path.write_bytes(base64.b64decode(partial_b64))
-                    print(f"Wrote partial {partial_path}")
+                    _info(f"Wrote partial {partial_path}")
                     continue
             image_b64 = _scan_final_image_base64(item)
             if image_b64:
@@ -734,7 +766,12 @@ def _run_image_api(
         _die(f"Codex Image API request failed: {exc}")
 
     if options.get("stream"):
-        return _stream_image_api_response(response, final_path, save_partials=bool(args.partial_images))
+        return _stream_image_api_response(
+            response,
+            final_path,
+            save_partials=bool(args.partial_images),
+            verbose=args.verbose,
+        )
     _write_image_api_log(log_path, options, response)
     return _image_response_bytes(response)
 
@@ -768,6 +805,7 @@ def main() -> int:
     parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
     parser.add_argument("--instructions")
     parser.add_argument("--auth-json", help="Path to Codex auth.json. When provided, this exact file overrides automatic discovery.")
+    parser.add_argument("--verbose", action="store_true", help="Print debug details.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -809,6 +847,7 @@ def main() -> int:
             _log_path(out_path),
             out_path,
             save_partials=bool(args.partial_images),
+            verbose=args.verbose,
         )
     else:
         image_bytes = _run_image_api(
@@ -821,11 +860,11 @@ def main() -> int:
         )
     if not final_written:
         out_path.write_bytes(image_bytes)
-    print(f"Wrote {out_path}")
+    _info(f"Wrote {out_path}")
     if args.copy_to:
         copied = _copy_result(out_path, args.copy_to, force=args.force)
-        print(f"Copied {copied}")
-    print(f"Completed in {time.time() - started:.1f}s", file=sys.stderr)
+        _info(f"Copied {copied}")
+    _info(f"Completed in {time.time() - started:.1f}s")
     return 0
 
 
