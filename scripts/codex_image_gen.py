@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Codex-auth image generation with free local reference images.
 
-This CLI calls the Codex Image API endpoints by default using the local Codex
-auth snapshot in `~/.codex/auth.json`. Prompt-only generation uses the OpenAI
-SDK with the Codex base URL. Local reference images are sent to the edit
-endpoint as JSON `image_url` inputs. The Codex Responses hosted-tool route
-remains available through `--transport responses`. Generated images are saved
-under `~/.codex/generated_images_free_reference/` by default.
+This CLI calls the Codex Responses hosted-tool route by default using the local
+Codex auth snapshot in `~/.codex/auth.json`. The Codex Image API generation and
+edit endpoints remain available through `--transport image-api`. Generated
+images are saved under `~/.codex/generated_images_free_reference/` by default.
 """
 
 from __future__ import annotations
@@ -83,6 +81,7 @@ ALLOWED_MODERATIONS = {"auto", "low"}
 ALLOWED_OUTPUT_FORMATS = {"png", "webp", "jpeg"}
 ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
 ALLOWED_TRANSPORTS = {"image-api", "responses"}
+DEFAULT_TRANSPORT = "responses"
 UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS = {"gpt-image-1-mini"}
 GPT_IMAGE_2_PREFIX = "gpt-image-2"
 GPT_IMAGE_2_MIN_PIXELS = 655_360
@@ -789,11 +788,11 @@ def main() -> int:
     parser.add_argument(
         "--transport",
         choices=sorted(ALLOWED_TRANSPORTS),
-        default="image-api",
+        default=DEFAULT_TRANSPORT,
         help=(
-            "Request path to use. image-api (default) calls Codex /images/generations "
-            "or /images/edits; responses calls Codex /responses with the hosted "
-            "image_generation tool."
+            "Request path to use. responses (default) calls Codex /responses with "
+            "the hosted image_generation tool; image-api calls Codex "
+            "/images/generations or /images/edits."
         ),
     )
     parser.add_argument("--model", help="Model for the selected transport.")

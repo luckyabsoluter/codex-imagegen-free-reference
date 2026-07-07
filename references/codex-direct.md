@@ -4,7 +4,22 @@ Use this reference when the normal built-in `image_gen` tool is unavailable or w
 
 ## Summary
 
-The practical Codex-auth path is the Codex Image API namespace. Prompt-only generation goes to:
+The practical Codex-auth path defaults to the Codex Responses hosted-tool route:
+
+```text
+https://chatgpt.com/backend-api/codex/responses
+```
+
+It uses the same hosted-tool shape used by Codex itself: `ToolSpec::ImageGeneration` serializes to `{"type":"image_generation","output_format":"png"}` and is included in the Responses request. The payload looks like:
+
+```json
+{
+  "stream": true,
+  "tools": [{ "type": "image_generation", "output_format": "png" }]
+}
+```
+
+The Codex Image API namespace remains available when explicitly requested with `--transport image-api`. Prompt-only generation goes to:
 
 ```text
 https://chatgpt.com/backend-api/codex/images/generations
@@ -24,25 +39,8 @@ base_url="https://chatgpt.com/backend-api/codex"
 
 and the Codex access token from `auth.json`. For image edits, the SDK's public multipart helper does not match this Codex endpoint, so the CLI sends the Codex JSON schema directly: `images: [{ "image_url": "data:image/..." }]`.
 
-The older hosted-tool route remains available when explicitly requested:
-
 ```text
-python scripts/codex_image_gen.py --transport responses ...
-```
-
-That optional route calls:
-
-```text
-https://chatgpt.com/backend-api/codex/responses
-```
-
-with the same hosted-tool shape used by Codex itself: `ToolSpec::ImageGeneration` serializes to `{"type":"image_generation","output_format":"png"}` and is included in the Responses request. The payload looks like:
-
-```json
-{
-  "stream": true,
-  "tools": [{ "type": "image_generation", "output_format": "png" }]
-}
+python scripts/codex_image_gen.py --transport image-api ...
 ```
 
 The tool object can also carry optional image-generation controls:
@@ -64,11 +62,11 @@ The tool object can also carry optional image-generation controls:
 
 Important observations:
 
-- The default Image API path uses the SDK image generation/edit methods, not the Responses `image_generation` tool.
-- The optional Responses transport rejects non-streaming requests with `Stream must be set to true`.
-- The optional Responses transport is SSE; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
-- Local reference images are attached to the default edit endpoint as JSON `image_url` objects.
-- With `--transport responses`, local reference images are attached as `input_image` items using `data:image/...;base64,...` URLs.
+- The default Responses transport is SSE; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
+- The default Responses transport rejects non-streaming requests with `Stream must be set to true`.
+- Local reference images are attached to the default Responses transport as `input_image` items using `data:image/...;base64,...` URLs.
+- With `--transport image-api`, prompt-only generation uses the SDK image generation method, while edits use the direct Codex JSON schema.
+- With `--transport image-api`, local reference images are attached to the edit endpoint as JSON `image_url` objects.
 - Direct mode supports local mask images. The first `--reference` is the edit target when a mask is used.
 - This path uses Codex auth automatically. If `--auth-json /path/to/auth.json` is provided, that exact auth file is used. Otherwise it checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
 - If none of those auth files is available, the CLI exits with a configuration error. It does not require `OPENAI_API_KEY`.
@@ -148,7 +146,7 @@ The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 - `--moderation auto|low`
 - `--action generate|edit|auto`
 - `--partial-images 0..3`
-- `--image-model <gpt-image-model>`, overriding `--model` for the default Image API transport and mapped to the tool-level `model` field for `--transport responses`
+- `--image-model <gpt-image-model>`, mapped to the tool-level `model` field for the default Responses transport and overriding `--model` for `--transport image-api`
 - `--input-fidelity high|low`, for models that allow explicit input-fidelity selection
 - `--mask <local-image>`, requiring at least one `--reference`
 - `--verbose`, printing debug details
@@ -250,11 +248,11 @@ python scripts/codex_image_gen.py \
   --copy-to output/imagegen/architecture-preview.png
 ```
 
-Use the optional Responses transport only when the hosted-tool path is required:
+Use the optional Image API transport only when the generation/edit namespace path is required:
 
 ```bash
 python scripts/codex_image_gen.py \
-  --transport responses \
+  --transport image-api \
   --prompt "A detailed architectural visualization at golden hour" \
   --quality high \
   --size 2048x1152 \
