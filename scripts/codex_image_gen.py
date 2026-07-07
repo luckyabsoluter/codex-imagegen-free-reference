@@ -74,6 +74,7 @@ DEFAULT_RESPONSES_MODEL = "gpt-5.5"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
 FINAL_IMAGE_KEYS = {"result", "image", "b64_json"}
+IMAGE_PAYLOAD_KEYS = FINAL_IMAGE_KEYS | {"partial_image_b64", "image_url"}
 ALLOWED_ACTIONS = {"generate", "edit", "auto"}
 ALLOWED_BACKGROUNDS = {"transparent", "opaque", "auto"}
 ALLOWED_INPUT_FIDELITIES = {"high", "low"}
@@ -453,7 +454,7 @@ def _redact_responses_stream_item(value: Any) -> Any:
     if isinstance(value, dict):
         redacted = {}
         for key, nested in value.items():
-            if key in {"result", "image", "b64_json", "partial_image_b64", "image_url"} and isinstance(nested, str):
+            if key in IMAGE_PAYLOAD_KEYS and isinstance(nested, str):
                 redacted[key] = f"<redacted {len(nested)} chars>"
             else:
                 redacted[key] = _redact_responses_stream_item(nested)
@@ -474,6 +475,40 @@ def _redact_responses_log_line(line: str) -> str:
     except json.JSONDecodeError:
         return line
     return "data: " + json.dumps(_redact_responses_stream_item(item), ensure_ascii=False)
+
+
+def _compact_json(value: Any, *, limit: int = 2000) -> str:
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
+def _format_stream_failure(
+    message: str,
+    *,
+    log_path: Path | None = None,
+    last_item: Any = None,
+) -> str:
+    details = [message]
+    if log_path:
+        details.append(f"Log: {log_path}")
+    if last_item is not None:
+        redacted = _redact_responses_stream_item(_to_plain_data(last_item))
+        details.append(f"Last event: {_compact_json(redacted)}")
+    return " ".join(details)
+
+
+def _write_responses_failure_log(log_path: Path | None, event_type: str, details: dict[str, Any]) -> None:
+    if not log_path:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    redacted = _redact_responses_stream_item(details)
+    log_path.write_text(
+        "event: " + event_type + "\n"
+        + "data: " + json.dumps(redacted, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _stream_image(
@@ -505,13 +540,30 @@ def _stream_image(
         response = request.urlopen(req, timeout=600)
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", "ignore")
-        _die(f"Codex Responses request failed with HTTP {exc.code}: {body[:2000]}")
+        details = {"status": exc.code, "body": body[:2000], "endpoint": CODEX_RESPONSES_URL}
+        _write_responses_failure_log(log_path, "response.request_failed", details)
+        _die(
+            _format_stream_failure(
+                f"Codex Responses request failed with HTTP {exc.code}: {body[:2000]}",
+                log_path=log_path,
+                last_item=details,
+            )
+        )
     except error.URLError as exc:
-        _die(f"Codex Responses request failed: {exc}")
+        details = {"error": str(exc), "endpoint": CODEX_RESPONSES_URL}
+        _write_responses_failure_log(log_path, "response.request_failed", details)
+        _die(
+            _format_stream_failure(
+                f"Codex Responses request failed: {exc}",
+                log_path=log_path,
+                last_item=details,
+            )
+        )
 
     log_handle = None
     partial_count = 0
     last_partial: tuple[Path, bytes] | None = None
+    last_item: Any = None
     try:
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -529,6 +581,7 @@ def _stream_image(
                 item = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            last_item = item
             if (
                 save_partials
                 and isinstance(item, dict)
@@ -561,7 +614,13 @@ def _stream_image(
         if log_handle:
             log_handle.close()
         response.close()
-    _die("No generated image was found in the streamed response.")
+    _die(
+        _format_stream_failure(
+            "No generated image was found in the streamed response.",
+            log_path=log_path,
+            last_item=last_item,
+        )
+    )
 
 
 def _create_codex_openai_client(token: str, account_id: str | None) -> Any:
@@ -592,12 +651,18 @@ def _to_plain_data(value: Any) -> Any:
     return value
 
 
-def _image_response_bytes(response: Any) -> bytes:
+def _image_response_bytes(response: Any, *, log_path: Path | None = None) -> bytes:
     data = getattr(response, "data", None)
     if not data and isinstance(response, dict):
         data = response.get("data")
     if not data:
-        _die("No image data was returned by the Codex Image API.")
+        _die(
+            _format_stream_failure(
+                "No image data was returned by the Codex Image API.",
+                log_path=log_path,
+                last_item=response,
+            )
+        )
 
     first = data[0]
     if isinstance(first, dict):
@@ -605,7 +670,13 @@ def _image_response_bytes(response: Any) -> bytes:
     else:
         image_b64 = getattr(first, "b64_json", None)
     if not _looks_like_image_base64(image_b64):
-        _die("Codex Image API response did not include b64_json image data.")
+        _die(
+            _format_stream_failure(
+                "Codex Image API response did not include b64_json image data.",
+                log_path=log_path,
+                last_item=first,
+            )
+        )
     return base64.b64decode(image_b64)
 
 
@@ -614,7 +685,7 @@ def _redact_image_api_log(value: Any) -> Any:
     if isinstance(plain, dict):
         redacted = {}
         for key, nested in plain.items():
-            if key in {"b64_json", "image_url"} and isinstance(nested, str):
+            if key in IMAGE_PAYLOAD_KEYS and isinstance(nested, str):
                 redacted[key] = f"<redacted {len(nested)} chars>"
             else:
                 redacted[key] = _redact_image_api_log(nested)
@@ -640,41 +711,85 @@ def _write_image_api_log(log_path: Path, payload: dict[str, Any], response: Any)
     )
 
 
+def _write_image_api_failure_log(
+    log_path: Path,
+    payload: dict[str, Any],
+    *,
+    status_code: int | None = None,
+    response_text: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {}
+    if status_code is not None:
+        response["status_code"] = status_code
+    if response_text is not None:
+        response["text"] = response_text[:4000]
+    if error_message is not None:
+        response["error"] = error_message
+    _write_image_api_log(log_path, payload, response)
+    return response
+
+
+def _write_image_api_stream_log_item(log_handle: Any, item: Any) -> None:
+    redacted = _redact_image_api_log(item)
+    log_handle.write(json.dumps(redacted, ensure_ascii=False) + "\n")
+
+
 def _stream_image_api_response(
     stream: Any,
     final_path: Path,
+    log_path: Path,
+    request_options: dict[str, Any],
     *,
     save_partials: bool,
     verbose: bool,
 ) -> bytes:
     partial_count = 0
-    for event in stream:
-        item = _to_plain_data(event)
-        if save_partials and isinstance(item, dict):
-            partial_b64 = item.get("partial_image_b64")
-            if not partial_b64:
-                partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
-            if _looks_like_image_base64(partial_b64):
-                partial_count += 1
-                partial_path = _partial_output_path(final_path, partial_count)
-                partial_path.write_bytes(base64.b64decode(partial_b64))
-                _info(f"Wrote partial {partial_path}")
-                continue
-        image_b64 = _scan_final_image_base64(item)
-        if image_b64:
-            return base64.b64decode(image_b64)
-    _die("No generated image was found in the streamed Codex Image API response.")
+    last_item: Any = None
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        _write_image_api_stream_log_item(log_handle, {"request": request_options})
+        for event in stream:
+            item = _to_plain_data(event)
+            last_item = item
+            _write_image_api_stream_log_item(log_handle, {"event": item})
+            if save_partials and isinstance(item, dict):
+                partial_b64 = item.get("partial_image_b64")
+                if not partial_b64:
+                    partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
+                if _looks_like_image_base64(partial_b64):
+                    partial_count += 1
+                    partial_path = _partial_output_path(final_path, partial_count)
+                    partial_path.write_bytes(base64.b64decode(partial_b64))
+                    _info(f"Wrote partial {partial_path}")
+                    continue
+            image_b64 = _scan_final_image_base64(item)
+            if image_b64:
+                return base64.b64decode(image_b64)
+    _die(
+        _format_stream_failure(
+            "No generated image was found in the streamed Codex Image API response.",
+            log_path=log_path,
+            last_item=last_item,
+        )
+    )
 
 
 def _stream_json_image_api_response(
     response: Any,
     final_path: Path,
+    log_path: Path,
+    request_options: dict[str, Any],
     *,
     save_partials: bool,
     verbose: bool,
 ) -> bytes:
     partial_count = 0
+    last_item: Any = None
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = log_path.open("w", encoding="utf-8")
     try:
+        _write_image_api_stream_log_item(log_handle, {"request": request_options})
         for raw in response:
             line = raw.decode("utf-8", "ignore").rstrip("\n")
             if not line.startswith("data:"):
@@ -686,6 +801,8 @@ def _stream_json_image_api_response(
                 item = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            last_item = item
+            _write_image_api_stream_log_item(log_handle, {"event": item})
             if save_partials:
                 partial_b64 = item.get("partial_image_b64") if isinstance(item, dict) else None
                 if not partial_b64 and isinstance(item, dict):
@@ -700,8 +817,15 @@ def _stream_json_image_api_response(
             if image_b64:
                 return base64.b64decode(image_b64)
     finally:
+        log_handle.close()
         response.close()
-    _die("No generated image was found in the streamed Codex Image API response.")
+    _die(
+        _format_stream_failure(
+            "No generated image was found in the streamed Codex Image API response.",
+            log_path=log_path,
+            last_item=last_item,
+        )
+    )
 
 
 def _request_image_api_edit(
@@ -729,15 +853,48 @@ def _request_image_api_edit(
             timeout=600,
         )
         if response.status_code >= 400:
-            _die(
-                f"Codex Image API edit request failed with HTTP {response.status_code}: "
-                f"{response.text[:2000]}"
+            failure = _write_image_api_failure_log(
+                log_path,
+                payload,
+                status_code=response.status_code,
+                response_text=response.text,
             )
-        data = response.json()
+            _die(
+                _format_stream_failure(
+                    f"Codex Image API edit request failed with HTTP {response.status_code}: "
+                    f"{response.text[:2000]}",
+                    log_path=log_path,
+                    last_item=failure,
+                )
+            )
+        try:
+            data = response.json()
+        except Exception as exc:
+            failure = _write_image_api_failure_log(
+                log_path,
+                payload,
+                status_code=response.status_code,
+                response_text=response.text,
+                error_message=f"Could not parse JSON response: {exc}",
+            )
+            _die(
+                _format_stream_failure(
+                    f"Codex Image API edit response was not valid JSON: {exc}",
+                    log_path=log_path,
+                    last_item=failure,
+                )
+            )
         _write_image_api_log(log_path, payload, data)
     except Exception as exc:
-        _die(f"Codex Image API edit request failed: {exc}")
-    return _image_response_bytes(data)
+        failure = _write_image_api_failure_log(log_path, payload, error_message=str(exc))
+        _die(
+            _format_stream_failure(
+                f"Codex Image API edit request failed: {exc}",
+                log_path=log_path,
+                last_item=failure,
+            )
+        )
+    return _image_response_bytes(data, log_path=log_path)
 
 
 def _run_image_api(
@@ -762,17 +919,26 @@ def _run_image_api(
     try:
         response = client.images.generate(**options)
     except Exception as exc:
-        _die(f"Codex Image API request failed: {exc}")
+        failure = _write_image_api_failure_log(log_path, options, error_message=str(exc))
+        _die(
+            _format_stream_failure(
+                f"Codex Image API request failed: {exc}",
+                log_path=log_path,
+                last_item=failure,
+            )
+        )
 
     if options.get("stream"):
         return _stream_image_api_response(
             response,
             final_path,
+            log_path,
+            options,
             save_partials=bool(args.partial_images),
             verbose=args.verbose,
         )
     _write_image_api_log(log_path, options, response)
-    return _image_response_bytes(response)
+    return _image_response_bytes(response, log_path=log_path)
 
 
 def main() -> int:
