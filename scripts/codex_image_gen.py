@@ -490,14 +490,15 @@ def _format_stream_failure(
     log_path: Path | None = None,
     last_item: Any = None,
     output_item_done: Any = None,
+    show_response_details: bool = True,
 ) -> str:
     details = [message]
     if log_path:
         details.append(f"Log: {log_path}")
-    if output_item_done is not None:
+    if show_response_details and output_item_done is not None:
         redacted = _redact_responses_stream_item(_to_plain_data(output_item_done))
         details.append(f"Output item done: {_compact_json(redacted)}")
-    if last_item is not None:
+    if show_response_details and last_item is not None:
         redacted = _redact_responses_stream_item(_to_plain_data(last_item))
         details.append(f"Last event: {_compact_json(redacted)}")
     return " ".join(details)
@@ -524,6 +525,7 @@ def _stream_image(
     *,
     save_partials: bool,
     verbose: bool,
+    show_response_details: bool,
 ) -> tuple[bytes, bool]:
     headers = {
         "Authorization": "Bearer " + token,
@@ -551,6 +553,7 @@ def _stream_image(
                 f"Codex Responses request failed with HTTP {exc.code}: {body[:2000]}",
                 log_path=log_path,
                 last_item=details,
+                show_response_details=show_response_details,
             )
         )
     except error.URLError as exc:
@@ -561,6 +564,7 @@ def _stream_image(
                 f"Codex Responses request failed: {exc}",
                 log_path=log_path,
                 last_item=details,
+                show_response_details=show_response_details,
             )
         )
 
@@ -627,6 +631,7 @@ def _stream_image(
             log_path=log_path,
             last_item=last_item,
             output_item_done=last_output_item_done,
+            show_response_details=show_response_details,
         )
     )
 
@@ -659,7 +664,12 @@ def _to_plain_data(value: Any) -> Any:
     return value
 
 
-def _image_response_bytes(response: Any, *, log_path: Path | None = None) -> bytes:
+def _image_response_bytes(
+    response: Any,
+    *,
+    log_path: Path | None = None,
+    show_response_details: bool = True,
+) -> bytes:
     data = getattr(response, "data", None)
     if not data and isinstance(response, dict):
         data = response.get("data")
@@ -669,6 +679,7 @@ def _image_response_bytes(response: Any, *, log_path: Path | None = None) -> byt
                 "No image data was returned by the Codex Image API.",
                 log_path=log_path,
                 last_item=response,
+                show_response_details=show_response_details,
             )
         )
 
@@ -683,6 +694,7 @@ def _image_response_bytes(response: Any, *, log_path: Path | None = None) -> byt
                 "Codex Image API response did not include b64_json image data.",
                 log_path=log_path,
                 last_item=first,
+                show_response_details=show_response_details,
             )
         )
     return base64.b64decode(image_b64)
@@ -751,6 +763,7 @@ def _stream_image_api_response(
     *,
     save_partials: bool,
     verbose: bool,
+    show_response_details: bool,
 ) -> bytes:
     partial_count = 0
     last_item: Any = None
@@ -779,6 +792,7 @@ def _stream_image_api_response(
             "No generated image was found in the streamed Codex Image API response.",
             log_path=log_path,
             last_item=last_item,
+            show_response_details=show_response_details,
         )
     )
 
@@ -791,6 +805,7 @@ def _stream_json_image_api_response(
     *,
     save_partials: bool,
     verbose: bool,
+    show_response_details: bool,
 ) -> bytes:
     partial_count = 0
     last_item: Any = None
@@ -832,6 +847,7 @@ def _stream_json_image_api_response(
             "No generated image was found in the streamed Codex Image API response.",
             log_path=log_path,
             last_item=last_item,
+            show_response_details=show_response_details,
         )
     )
 
@@ -841,6 +857,8 @@ def _request_image_api_edit(
     token: str,
     account_id: str | None,
     log_path: Path,
+    *,
+    show_response_details: bool,
 ) -> bytes:
     if payload.get("stream"):
         _die("--partial-images with --transport image-api edit is not supported; use --transport responses.")
@@ -873,6 +891,7 @@ def _request_image_api_edit(
                     f"{response.text[:2000]}",
                     log_path=log_path,
                     last_item=failure,
+                    show_response_details=show_response_details,
                 )
             )
         try:
@@ -890,6 +909,7 @@ def _request_image_api_edit(
                     f"Codex Image API edit response was not valid JSON: {exc}",
                     log_path=log_path,
                     last_item=failure,
+                    show_response_details=show_response_details,
                 )
             )
         _write_image_api_log(log_path, payload, data)
@@ -900,9 +920,14 @@ def _request_image_api_edit(
                 f"Codex Image API edit request failed: {exc}",
                 log_path=log_path,
                 last_item=failure,
+                show_response_details=show_response_details,
             )
         )
-    return _image_response_bytes(data, log_path=log_path)
+    return _image_response_bytes(
+        data,
+        log_path=log_path,
+        show_response_details=show_response_details,
+    )
 
 
 def _run_image_api(
@@ -920,6 +945,7 @@ def _run_image_api(
             token,
             account_id,
             log_path,
+            show_response_details=not args.hide_response_details,
         )
 
     client = _create_codex_openai_client(token, account_id)
@@ -933,6 +959,7 @@ def _run_image_api(
                 f"Codex Image API request failed: {exc}",
                 log_path=log_path,
                 last_item=failure,
+                show_response_details=not args.hide_response_details,
             )
         )
 
@@ -944,9 +971,14 @@ def _run_image_api(
             options,
             save_partials=bool(args.partial_images),
             verbose=args.verbose,
+            show_response_details=not args.hide_response_details,
         )
     _write_image_api_log(log_path, options, response)
-    return _image_response_bytes(response, log_path=log_path)
+    return _image_response_bytes(
+        response,
+        log_path=log_path,
+        show_response_details=not args.hide_response_details,
+    )
 
 
 def main() -> int:
@@ -983,6 +1015,11 @@ def main() -> int:
     parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
     parser.add_argument("--instructions")
     parser.add_argument("--auth-json", help="Path to Codex auth.json. When provided, this exact file overrides automatic discovery.")
+    parser.add_argument(
+        "--hide-response-details",
+        action="store_true",
+        help="Omit last response event details from error messages; redacted logs are still written.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print debug details.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -1026,6 +1063,7 @@ def main() -> int:
             out_path,
             save_partials=bool(args.partial_images),
             verbose=args.verbose,
+            show_response_details=not args.hide_response_details,
         )
     else:
         image_bytes = _run_image_api(

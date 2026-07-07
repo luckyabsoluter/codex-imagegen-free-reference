@@ -149,6 +149,7 @@ The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 - `--image-model <gpt-image-model>`, mapped to the tool-level `model` field for the default Responses transport and overriding `--model` for `--transport image-api`
 - `--input-fidelity high|low`, for models that allow explicit input-fidelity selection
 - `--mask <local-image>`, requiring at least one `--reference`
+- `--hide-response-details`, suppressing last response event details in error messages while preserving redacted logs
 - `--verbose`, printing debug details
 
 Validation notes:
@@ -158,6 +159,7 @@ Validation notes:
 - `--background transparent` requires `png` or `webp`, a transparency-capable image model, and not `gpt-image-2*`.
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
+- `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.
 - The CLI writes `<final-path>.log` next to the Codex-home original. Image API logs redact base64 image payloads; Responses logs keep SSE structure while redacting image payloads.
 
