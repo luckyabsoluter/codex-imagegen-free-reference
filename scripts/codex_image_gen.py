@@ -489,10 +489,14 @@ def _format_stream_failure(
     *,
     log_path: Path | None = None,
     last_item: Any = None,
+    output_item_done: Any = None,
 ) -> str:
     details = [message]
     if log_path:
         details.append(f"Log: {log_path}")
+    if output_item_done is not None:
+        redacted = _redact_responses_stream_item(_to_plain_data(output_item_done))
+        details.append(f"Output item done: {_compact_json(redacted)}")
     if last_item is not None:
         redacted = _redact_responses_stream_item(_to_plain_data(last_item))
         details.append(f"Last event: {_compact_json(redacted)}")
@@ -564,6 +568,7 @@ def _stream_image(
     partial_count = 0
     last_partial: tuple[Path, bytes] | None = None
     last_item: Any = None
+    last_output_item_done: Any = None
     try:
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -582,6 +587,8 @@ def _stream_image(
             except json.JSONDecodeError:
                 continue
             last_item = item
+            if isinstance(item, dict) and item.get("type") == "response.output_item.done":
+                last_output_item_done = item
             if (
                 save_partials
                 and isinstance(item, dict)
@@ -619,6 +626,7 @@ def _stream_image(
             "No generated image was found in the streamed response.",
             log_path=log_path,
             last_item=last_item,
+            output_item_done=last_output_item_done,
         )
     )
 
