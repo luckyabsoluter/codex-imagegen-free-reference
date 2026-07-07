@@ -788,8 +788,13 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="Allow overwriting the --copy-to target.")
     parser.add_argument(
         "--transport",
+        choices=sorted(ALLOWED_TRANSPORTS),
         default="image-api",
-        help="Transport to use: image-api (default) or responses.",
+        help=(
+            "Request path to use. image-api (default) calls Codex /images/generations "
+            "or /images/edits; responses calls Codex /responses with the hosted "
+            "image_generation tool."
+        ),
     )
     parser.add_argument("--model", help="Model for the selected transport.")
     parser.add_argument("--image-model", help="Optional GPT Image model; for image-api this overrides --model.")
