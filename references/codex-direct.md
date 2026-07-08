@@ -117,7 +117,7 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
-Default log names append `.log` to the generated original name. Image API logs are redacted JSON request/response records; Responses logs keep event structure while redacting image payloads:
+Default log names append `.log` to the generated original name. Logs begin with start metadata for endpoint, transport, output path, and request payload. Image API logs are redacted JSON request/response records; Responses logs keep event structure while redacting image payloads:
 
 ```text
 <uuid>-<human-readable-name>.<ext>.log
@@ -168,7 +168,7 @@ Validation notes:
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.
-- The CLI writes `<final-path>.log` next to the Codex-home original. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
+- The CLI writes `<final-path>.log` next to the Codex-home original. Logs start with endpoint, transport, output path, and request metadata. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
 
 ## CLI examples
 

@@ -289,6 +289,31 @@ def _log_path(final_path: Path) -> Path:
     return final_path.with_suffix(f"{final_path.suffix}.log")
 
 
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _start_info(
+    *,
+    endpoint: str,
+    transport: str,
+    final_path: Path,
+    request_payload: dict[str, Any],
+    client: str | None = None,
+) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "type": "codex_image_gen.start",
+        "started_at": _utc_timestamp(),
+        "endpoint": endpoint,
+        "transport": transport,
+        "output": str(final_path),
+        "request": request_payload,
+    }
+    if client:
+        info["client"] = client
+    return info
+
+
 def _partial_output_path(final_path: Path, index: int | str) -> Path:
     return final_path.with_name(f"{final_path.stem}-partial-{index}{final_path.suffix}")
 
@@ -535,12 +560,8 @@ def _write_responses_failure_log(log_path: Path | None, event_type: str, details
     if not log_path:
         return
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    redacted = _redact_responses_stream_item(details)
-    log_path.write_text(
-        "event: " + event_type + "\n"
-        + "data: " + json.dumps(redacted, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        _write_responses_log_event(log_handle, event_type, details)
 
 
 def _sdk_exception_details(exc: Exception) -> dict[str, Any]:
@@ -573,11 +594,15 @@ def _responses_event_type(item: Any) -> str:
     return "response.sdk_event"
 
 
+def _write_responses_log_event(log_handle: Any, event_type: str, data: Any) -> None:
+    redacted = _redact_responses_stream_item(_to_plain_data(data))
+    log_handle.write(f"event: {event_type}\n")
+    log_handle.write("data: " + json.dumps(redacted, ensure_ascii=False) + "\n\n")
+
+
 def _write_responses_sdk_log_item(log_handle: Any, item: Any) -> None:
     plain = _to_plain_data(item)
-    redacted = _redact_responses_stream_item(plain)
-    log_handle.write(f"event: {_responses_event_type(redacted)}\n")
-    log_handle.write("data: " + json.dumps(redacted, ensure_ascii=False) + "\n\n")
+    _write_responses_log_event(log_handle, _responses_event_type(plain), plain)
 
 
 def _stream_responses_raw(
@@ -591,6 +616,20 @@ def _stream_responses_raw(
     verbose: bool,
     show_response_details: bool,
 ) -> tuple[bytes, bool]:
+    if log_path:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8") as log_handle:
+            _write_responses_log_event(
+                log_handle,
+                "codex_image_gen.start",
+                _start_info(
+                    endpoint=CODEX_RESPONSES_URL,
+                    transport="responses-raw",
+                    final_path=final_path,
+                    request_payload=payload,
+                ),
+            )
+
     headers = {
         "Authorization": "Bearer " + token,
         "Content-Type": "application/json",
@@ -640,7 +679,7 @@ def _stream_responses_raw(
     try:
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_handle = log_path.open("w", encoding="utf-8")
+            log_handle = log_path.open("a", encoding="utf-8")
         for raw in response:
             line = raw.decode("utf-8", "ignore").rstrip("\n")
             if log_handle:
@@ -730,6 +769,23 @@ def _stream_responses_sdk(
     show_response_details: bool,
 ) -> tuple[bytes, bool]:
     client = _create_codex_openai_client(token, account_id)
+    log_handle = None
+    stream = None
+    if log_path:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("w", encoding="utf-8")
+        _write_responses_log_event(
+            log_handle,
+            "codex_image_gen.start",
+            _start_info(
+                endpoint=CODEX_RESPONSES_URL,
+                transport="responses",
+                final_path=final_path,
+                request_payload=payload,
+                client="openai-sdk",
+            ),
+        )
+        log_handle.flush()
     try:
         stream = client.responses.create(
             **payload,
@@ -743,7 +799,11 @@ def _stream_responses_sdk(
             "request": payload,
             "transport": "responses-sdk",
         }
-        _write_responses_failure_log(log_path, "response.request_failed", details)
+        if log_handle:
+            _write_responses_log_event(log_handle, "response.request_failed", details)
+            log_handle.close()
+        else:
+            _write_responses_failure_log(log_path, "response.request_failed", details)
         _die(
             _format_stream_failure(
                 f"Codex Responses SDK request failed: {exc}",
@@ -753,24 +813,11 @@ def _stream_responses_sdk(
             )
         )
 
-    log_handle = None
     partial_count = 0
     last_partial: tuple[Path, bytes] | None = None
     last_item: Any = None
     last_output_item_done: Any = None
     try:
-        if log_path:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_handle = log_path.open("w", encoding="utf-8")
-            _write_responses_sdk_log_item(
-                log_handle,
-                {
-                    "type": "codex_image_gen.request",
-                    "endpoint": CODEX_RESPONSES_URL,
-                    "request": payload,
-                    "transport": "responses-sdk",
-                },
-            )
         for event in stream:
             item = _to_plain_data(event)
             last_item = item
@@ -816,7 +863,7 @@ def _stream_responses_sdk(
     finally:
         if log_handle:
             log_handle.close()
-        close = getattr(stream, "close", None)
+        close = getattr(stream, "close", None) if stream is not None else None
         if close:
             close()
     _die(
@@ -881,14 +928,40 @@ def _redact_image_api_log(value: Any) -> Any:
     return plain
 
 
-def _write_image_api_log(log_path: Path, payload: dict[str, Any], response: Any) -> None:
+def _image_api_log_record(
+    payload: dict[str, Any],
+    response: Any,
+    *,
+    start_info: dict[str, Any] | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    if start_info is not None:
+        record["start"] = _redact_image_api_log(start_info)
+    if status is not None:
+        record["status"] = status
+    record["request"] = _redact_image_api_log(payload)
+    record["response"] = _redact_image_api_log(response)
+    return record
+
+
+def _write_image_api_log(
+    log_path: Path,
+    payload: dict[str, Any],
+    response: Any,
+    *,
+    start_info: dict[str, Any] | None = None,
+    status: str | None = None,
+) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(
         json.dumps(
-            {
-                "request": _redact_image_api_log(payload),
-                "response": _redact_image_api_log(response),
-            },
+            _image_api_log_record(
+                payload,
+                response,
+                start_info=start_info,
+                status=status,
+            ),
             ensure_ascii=False,
             indent=2,
         )
@@ -901,6 +974,7 @@ def _write_image_api_failure_log(
     log_path: Path,
     payload: dict[str, Any],
     *,
+    start_info: dict[str, Any] | None = None,
     status_code: int | None = None,
     response_text: str | None = None,
     error_message: str | None = None,
@@ -912,8 +986,18 @@ def _write_image_api_failure_log(
         response["text"] = response_text[:4000]
     if error_message is not None:
         response["error"] = error_message
-    _write_image_api_log(log_path, payload, response)
+    _write_image_api_log(log_path, payload, response, start_info=start_info, status="failed")
     return response
+
+
+def _write_image_api_start_log(log_path: Path, payload: dict[str, Any], start_info: dict[str, Any]) -> None:
+    _write_image_api_log(log_path, payload, None, start_info=start_info, status="started")
+
+
+def _write_image_api_stream_start_log(log_path: Path, start_info: dict[str, Any]) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        _write_image_api_stream_log_item(log_handle, {"start": start_info})
 
 
 def _write_image_api_stream_log_item(log_handle: Any, item: Any) -> None:
@@ -934,7 +1018,7 @@ def _stream_image_api_response(
     partial_count = 0
     last_item: Any = None
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as log_handle:
+    with log_path.open("a", encoding="utf-8") as log_handle:
         _write_image_api_stream_log_item(log_handle, {"request": request_options})
         for event in stream:
             item = _to_plain_data(event)
@@ -976,7 +1060,7 @@ def _stream_json_image_api_response(
     partial_count = 0
     last_item: Any = None
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_handle = log_path.open("w", encoding="utf-8")
+    log_handle = log_path.open("a", encoding="utf-8")
     try:
         _write_image_api_stream_log_item(log_handle, {"request": request_options})
         for raw in response:
@@ -1024,6 +1108,7 @@ def _request_image_api_edit(
     account_id: str | None,
     log_path: Path,
     *,
+    start_info: dict[str, Any],
     show_response_details: bool,
 ) -> bytes:
     if payload.get("stream"):
@@ -1048,6 +1133,7 @@ def _request_image_api_edit(
             failure = _write_image_api_failure_log(
                 log_path,
                 payload,
+                start_info=start_info,
                 status_code=response.status_code,
                 response_text=response.text,
             )
@@ -1066,6 +1152,7 @@ def _request_image_api_edit(
             failure = _write_image_api_failure_log(
                 log_path,
                 payload,
+                start_info=start_info,
                 status_code=response.status_code,
                 response_text=response.text,
                 error_message=f"Could not parse JSON response: {exc}",
@@ -1078,9 +1165,14 @@ def _request_image_api_edit(
                     show_response_details=show_response_details,
                 )
             )
-        _write_image_api_log(log_path, payload, data)
+        _write_image_api_log(log_path, payload, data, start_info=start_info, status="completed")
     except Exception as exc:
-        failure = _write_image_api_failure_log(log_path, payload, error_message=str(exc))
+        failure = _write_image_api_failure_log(
+            log_path,
+            payload,
+            start_info=start_info,
+            error_message=str(exc),
+        )
         _die(
             _format_stream_failure(
                 f"Codex Image API edit request failed: {exc}",
@@ -1106,20 +1198,45 @@ def _run_image_api(
 ) -> bytes:
     if _uses_image_edit_endpoint(args):
         payload = _build_image_api_edit_payload(args, prompt)
+        start_info = _start_info(
+            endpoint=CODEX_IMAGE_EDITS_URL,
+            transport="image-api",
+            final_path=final_path,
+            request_payload=payload,
+            client="httpx-json",
+        )
+        _write_image_api_start_log(log_path, payload, start_info)
         return _request_image_api_edit(
             payload,
             token,
             account_id,
             log_path,
+            start_info=start_info,
             show_response_details=not args.hide_response_details,
         )
 
     client = _create_codex_openai_client(token, account_id)
     options = _build_image_api_options(args, prompt)
+    start_info = _start_info(
+        endpoint=CODEX_IMAGE_GENERATIONS_URL,
+        transport="image-api",
+        final_path=final_path,
+        request_payload=options,
+        client="openai-sdk",
+    )
+    if options.get("stream"):
+        _write_image_api_stream_start_log(log_path, start_info)
+    else:
+        _write_image_api_start_log(log_path, options, start_info)
     try:
         response = client.images.generate(**options)
     except Exception as exc:
-        failure = _write_image_api_failure_log(log_path, options, error_message=str(exc))
+        failure = _write_image_api_failure_log(
+            log_path,
+            options,
+            start_info=start_info,
+            error_message=str(exc),
+        )
         _die(
             _format_stream_failure(
                 f"Codex Image API request failed: {exc}",
@@ -1139,7 +1256,7 @@ def _run_image_api(
             verbose=args.verbose,
             show_response_details=not args.hide_response_details,
         )
-    _write_image_api_log(log_path, options, response)
+    _write_image_api_log(log_path, options, response, start_info=start_info, status="completed")
     return _image_response_bytes(
         response,
         log_path=log_path,
