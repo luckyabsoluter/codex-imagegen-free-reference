@@ -4,7 +4,7 @@ Use this reference when the normal built-in `image_gen` tool is unavailable or w
 
 ## Summary
 
-The practical Codex-auth path defaults to the Codex Responses hosted-tool route:
+The practical Codex-auth path defaults to the Codex Responses hosted-tool route through the OpenAI SDK:
 
 ```text
 https://chatgpt.com/backend-api/codex/responses
@@ -31,7 +31,7 @@ Requests with `--reference`, `--mask`, or `--action edit` go to:
 https://chatgpt.com/backend-api/codex/images/edits
 ```
 
-For prompt-only generation, the CLI uses the OpenAI SDK with:
+For the default Responses transport and prompt-only Image API generation, the CLI uses the OpenAI SDK with:
 
 ```text
 base_url="https://chatgpt.com/backend-api/codex"
@@ -41,6 +41,12 @@ and the Codex access token from `auth.json`. For image edits, the SDK's public m
 
 ```text
 python scripts/codex_image_gen.py --transport image-api ...
+```
+
+The legacy raw SSE Responses caller remains available only as a deprecated fallback:
+
+```text
+python scripts/codex_image_gen.py --transport responses-raw ...
 ```
 
 The tool object can also carry optional image-generation controls:
@@ -62,9 +68,10 @@ The tool object can also carry optional image-generation controls:
 
 Important observations:
 
-- The default Responses transport is SSE; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
+- The default Responses transport uses the SDK streaming interface; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
 - The default Responses transport rejects non-streaming requests with `Stream must be set to true`.
 - Local reference images are attached to the default Responses transport as `input_image` items using `data:image/...;base64,...` URLs.
+- `--transport responses-raw` is deprecated and exists only to keep the previous direct SSE caller available for debugging.
 - With `--transport image-api`, prompt-only generation uses the SDK image generation method, while edits use the direct Codex JSON schema.
 - With `--transport image-api`, local reference images are attached to the edit endpoint as JSON `image_url` objects.
 - Direct mode supports local mask images. The first `--reference` is the edit target when a mask is used.
@@ -110,7 +117,7 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
-Default log names append `.log` to the generated original name. Image API logs are redacted JSON request/response records; Responses logs keep SSE structure while redacting image payloads:
+Default log names append `.log` to the generated original name. Image API logs are redacted JSON request/response records; Responses logs keep event structure while redacting image payloads:
 
 ```text
 <uuid>-<human-readable-name>.<ext>.log
@@ -161,7 +168,7 @@ Validation notes:
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.
-- The CLI writes `<final-path>.log` next to the Codex-home original. Image API logs redact base64 image payloads; Responses logs keep SSE structure while redacting image payloads.
+- The CLI writes `<final-path>.log` next to the Codex-home original. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
 
 ## CLI examples
 

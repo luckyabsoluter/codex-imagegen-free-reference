@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Codex-auth image generation with free local reference images.
 
-This CLI calls the Codex Responses hosted-tool route by default using the local
-Codex auth snapshot in `~/.codex/auth.json`. The Codex Image API generation and
-edit endpoints remain available through `--transport image-api`. Generated
-images are saved under `~/.codex/generated_images_free_reference/` by default.
+This CLI calls the Codex Responses hosted-tool route through the OpenAI SDK by
+default using the local Codex auth snapshot in `~/.codex/auth.json`. The Codex
+Image API generation and edit endpoints remain available through
+`--transport image-api`. Generated images are saved under
+`~/.codex/generated_images_free_reference/` by default.
 """
 
 from __future__ import annotations
@@ -81,7 +82,9 @@ ALLOWED_INPUT_FIDELITIES = {"high", "low"}
 ALLOWED_MODERATIONS = {"auto", "low"}
 ALLOWED_OUTPUT_FORMATS = {"png", "webp", "jpeg"}
 ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
-ALLOWED_TRANSPORTS = {"image-api", "responses"}
+ALLOWED_TRANSPORTS = {"image-api", "responses", "responses-raw"}
+RESPONSES_TRANSPORTS = {"responses", "responses-raw"}
+DEPRECATED_TRANSPORTS = {"responses-raw"}
 DEFAULT_TRANSPORT = "responses"
 UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS = {"gpt-image-1-mini"}
 GPT_IMAGE_2_PREFIX = "gpt-image-2"
@@ -126,6 +129,10 @@ def _effective_responses_model(args: argparse.Namespace) -> str:
 
 def _uses_image_edit_endpoint(args: argparse.Namespace) -> bool:
     return bool(args.reference or args.mask or args.action == "edit")
+
+
+def _uses_responses_transport(args: argparse.Namespace) -> bool:
+    return args.transport in RESPONSES_TRANSPORTS
 
 
 def _validate_choice(value: str | None, allowed: set[str], option: str) -> None:
@@ -191,8 +198,8 @@ def _validate_tool_options(args: argparse.Namespace) -> None:
     if args.background == "transparent":
         if args.output_format not in {"png", "webp"}:
             _die("--background transparent requires --output-format png or --output-format webp.")
-        if args.transport == "responses" and not args.image_model:
-            _die("--background transparent requires an explicit --image-model with --transport responses.")
+        if _uses_responses_transport(args) and not args.image_model:
+            _die("--background transparent requires an explicit --image-model with a Responses transport.")
         if _is_gpt_image_2_model(image_model):
             _die("transparent backgrounds are not supported by gpt-image-2 image models.")
 
@@ -200,8 +207,8 @@ def _validate_tool_options(args: argparse.Namespace) -> None:
         _die("--mask requires at least one --reference image; the first reference is the edit target.")
 
     if args.input_fidelity:
-        if args.transport == "responses" and not args.image_model:
-            _die("--input-fidelity requires an explicit --image-model with --transport responses.")
+        if _uses_responses_transport(args) and not args.image_model:
+            _die("--input-fidelity requires an explicit --image-model with a Responses transport.")
         if _is_gpt_image_2_model(image_model):
             _die("gpt-image-2 always uses high-fidelity image inputs; omit --input-fidelity.")
         if image_model in UNSUPPORTED_INPUT_FIDELITY_IMAGE_MODELS:
@@ -341,6 +348,26 @@ def _write_partial_image(
     partial_path.write_bytes(image_bytes)
     _info(f"Wrote partial {partial_path}")
     return partial_path, image_bytes
+
+
+def _final_image_bytes(
+    image_b64: str,
+    last_partial: tuple[Path, bytes] | None,
+    final_path: Path,
+    *,
+    verbose: bool,
+) -> tuple[bytes, bool]:
+    image_bytes = base64.b64decode(image_b64)
+    if last_partial:
+        partial_path, partial_bytes = last_partial
+        if partial_bytes == image_bytes:
+            partial_path.replace(final_path)
+            _debug(
+                f"Renamed final partial {partial_path} to {final_path}",
+                verbose=verbose,
+            )
+            return image_bytes, True
+    return image_bytes, False
 
 
 def _build_image_tool(args: argparse.Namespace) -> dict[str, Any]:
@@ -516,7 +543,44 @@ def _write_responses_failure_log(log_path: Path | None, event_type: str, details
     )
 
 
-def _stream_image(
+def _sdk_exception_details(exc: Exception) -> dict[str, Any]:
+    details: dict[str, Any] = {"error": str(exc)}
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        details["status_code"] = status_code
+    request_id = getattr(exc, "request_id", None)
+    if request_id:
+        details["request_id"] = request_id
+    body = getattr(exc, "body", None)
+    if body is not None:
+        details["body"] = _to_plain_data(body)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        response_status = getattr(response, "status_code", None)
+        if response_status is not None and "status_code" not in details:
+            details["status_code"] = response_status
+        response_text = getattr(response, "text", None)
+        if response_text:
+            details["response_text"] = response_text[:4000]
+    return details
+
+
+def _responses_event_type(item: Any) -> str:
+    if isinstance(item, dict):
+        event_type = item.get("type")
+        if isinstance(event_type, str) and event_type:
+            return event_type
+    return "response.sdk_event"
+
+
+def _write_responses_sdk_log_item(log_handle: Any, item: Any) -> None:
+    plain = _to_plain_data(item)
+    redacted = _redact_responses_stream_item(plain)
+    log_handle.write(f"event: {_responses_event_type(redacted)}\n")
+    log_handle.write("data: " + json.dumps(redacted, ensure_ascii=False) + "\n\n")
+
+
+def _stream_responses_raw(
     payload: dict[str, Any],
     token: str,
     account_id: str | None,
@@ -610,17 +674,7 @@ def _stream_image(
                 continue
             image_b64 = _scan_final_image_base64(item)
             if image_b64:
-                image_bytes = base64.b64decode(image_b64)
-                if last_partial:
-                    partial_path, partial_bytes = last_partial
-                    if partial_bytes == image_bytes:
-                        partial_path.replace(final_path)
-                        _debug(
-                            f"Renamed final partial {partial_path} to {final_path}",
-                            verbose=verbose,
-                        )
-                        return image_bytes, True
-                return image_bytes, False
+                return _final_image_bytes(image_b64, last_partial, final_path, verbose=verbose)
     finally:
         if log_handle:
             log_handle.close()
@@ -662,6 +716,118 @@ def _to_plain_data(value: Any) -> Any:
     if isinstance(value, list):
         return [_to_plain_data(item) for item in value]
     return value
+
+
+def _stream_responses_sdk(
+    payload: dict[str, Any],
+    token: str,
+    account_id: str | None,
+    log_path: Path | None,
+    final_path: Path,
+    *,
+    save_partials: bool,
+    verbose: bool,
+    show_response_details: bool,
+) -> tuple[bytes, bool]:
+    client = _create_codex_openai_client(token, account_id)
+    try:
+        stream = client.responses.create(
+            **payload,
+            extra_headers={"OpenAI-Beta": DEFAULT_BETA_HEADER},
+            timeout=600,
+        )
+    except Exception as exc:
+        details = {
+            **_sdk_exception_details(exc),
+            "endpoint": CODEX_RESPONSES_URL,
+            "request": payload,
+            "transport": "responses-sdk",
+        }
+        _write_responses_failure_log(log_path, "response.request_failed", details)
+        _die(
+            _format_stream_failure(
+                f"Codex Responses SDK request failed: {exc}",
+                log_path=log_path,
+                last_item=details,
+                show_response_details=show_response_details,
+            )
+        )
+
+    log_handle = None
+    partial_count = 0
+    last_partial: tuple[Path, bytes] | None = None
+    last_item: Any = None
+    last_output_item_done: Any = None
+    try:
+        if log_path:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_handle = log_path.open("w", encoding="utf-8")
+            _write_responses_sdk_log_item(
+                log_handle,
+                {
+                    "type": "codex_image_gen.request",
+                    "endpoint": CODEX_RESPONSES_URL,
+                    "request": payload,
+                    "transport": "responses-sdk",
+                },
+            )
+        for event in stream:
+            item = _to_plain_data(event)
+            last_item = item
+            if log_handle:
+                _write_responses_sdk_log_item(log_handle, item)
+            if isinstance(item, dict) and item.get("type") == "response.output_item.done":
+                last_output_item_done = item
+            if (
+                save_partials
+                and isinstance(item, dict)
+                and item.get("type") == "response.image_generation_call.partial_image"
+            ):
+                partial_count += 1
+                written_partial = _write_partial_image(
+                    item,
+                    final_path,
+                    partial_count,
+                    verbose=verbose,
+                )
+                if written_partial:
+                    last_partial = written_partial
+                continue
+            image_b64 = _scan_final_image_base64(item)
+            if image_b64:
+                return _final_image_bytes(image_b64, last_partial, final_path, verbose=verbose)
+    except Exception as exc:
+        details = {
+            **_sdk_exception_details(exc),
+            "endpoint": CODEX_RESPONSES_URL,
+            "transport": "responses-sdk",
+        }
+        if log_handle:
+            _write_responses_sdk_log_item(log_handle, {"type": "response.stream_error", **details})
+        _die(
+            _format_stream_failure(
+                f"Codex Responses SDK stream failed: {exc}",
+                log_path=log_path,
+                last_item=last_item or details,
+                output_item_done=last_output_item_done,
+                show_response_details=show_response_details,
+            )
+        )
+    finally:
+        if log_handle:
+            log_handle.close()
+        close = getattr(stream, "close", None)
+        if close:
+            close()
+    _die(
+        _format_stream_failure(
+            "No generated image was found in the streamed response.",
+            log_path=log_path,
+            last_item=last_item,
+            output_item_done=last_output_item_done,
+            show_response_details=show_response_details,
+        )
+    )
 
 
 def _image_response_bytes(
@@ -996,9 +1162,10 @@ def main() -> int:
         choices=sorted(ALLOWED_TRANSPORTS),
         default=DEFAULT_TRANSPORT,
         help=(
-            "Request path to use. responses (default) calls Codex /responses with "
-            "the hosted image_generation tool; image-api calls Codex "
-            "/images/generations or /images/edits."
+            "Request path to use. responses (default) calls Codex /responses through "
+            "the OpenAI SDK with the hosted image_generation tool; responses-raw is "
+            "the deprecated raw SSE fallback; image-api calls Codex /images/generations "
+            "or /images/edits."
         ),
     )
     parser.add_argument("--model", help="Model for the selected transport.")
@@ -1029,12 +1196,14 @@ def main() -> int:
     out_path = _output_path(args.name or prompt, args.output_format, args.auth_json)
 
     if args.dry_run:
-        if args.transport == "responses":
+        if _uses_responses_transport(args):
             payload = _build_payload(args, prompt)
             preview = {
                 "endpoint": CODEX_RESPONSES_URL,
                 "output": str(out_path),
                 "log": str(_log_path(out_path)),
+                "transport": args.transport,
+                "deprecated": args.transport in DEPRECATED_TRANSPORTS,
                 **_redact_preview_payload(payload),
             }
         else:
@@ -1053,18 +1222,31 @@ def main() -> int:
     token, account_id = _read_codex_auth(args.auth_json)
     started = time.time()
     final_written = False
-    if args.transport == "responses":
+    if _uses_responses_transport(args):
         payload = _build_payload(args, prompt)
-        image_bytes, final_written = _stream_image(
-            payload,
-            token,
-            account_id,
-            _log_path(out_path),
-            out_path,
-            save_partials=bool(args.partial_images),
-            verbose=args.verbose,
-            show_response_details=not args.hide_response_details,
-        )
+        if args.transport in DEPRECATED_TRANSPORTS:
+            _info("--transport responses-raw is deprecated; use --transport responses.")
+            image_bytes, final_written = _stream_responses_raw(
+                payload,
+                token,
+                account_id,
+                _log_path(out_path),
+                out_path,
+                save_partials=bool(args.partial_images),
+                verbose=args.verbose,
+                show_response_details=not args.hide_response_details,
+            )
+        else:
+            image_bytes, final_written = _stream_responses_sdk(
+                payload,
+                token,
+                account_id,
+                _log_path(out_path),
+                out_path,
+                save_partials=bool(args.partial_images),
+                verbose=args.verbose,
+                show_response_details=not args.hide_response_details,
+            )
     else:
         image_bytes = _run_image_api(
             args,
