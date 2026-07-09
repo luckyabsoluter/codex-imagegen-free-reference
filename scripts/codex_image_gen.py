@@ -92,18 +92,26 @@ GPT_IMAGE_2_MIN_PIXELS = 655_360
 GPT_IMAGE_2_MAX_PIXELS = 8_294_400
 GPT_IMAGE_2_MAX_EDGE = 3840
 GPT_IMAGE_2_MAX_RATIO = 3.0
+_CLI_LOG_FORMATS = {"responses-event", "image-json", "image-jsonl"}
+_CLI_LOG_PATH: Path | None = None
+_CLI_LOG_FORMAT: str | None = None
+_CLI_LOG_MESSAGES: list[dict[str, str]] = []
+_ACTIVE_CLI_LOG_HANDLE: Any = None
 
 
 def _die(message: str) -> None:
+    _log_cli_message("error", message)
     print(f"Error: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 
 def _info(message: str) -> None:
+    _log_cli_message("info", message)
     print(message)
 
 
 def _debug(message: str, *, verbose: bool) -> None:
+    _log_cli_message("debug", message)
     if verbose:
         print(message)
 
@@ -298,6 +306,91 @@ def _log_record_with_timestamp(value: Any) -> Any:
     if isinstance(plain, dict):
         return {**plain, "logged_at": _utc_timestamp()}
     return {"value": plain, "logged_at": _utc_timestamp()}
+
+
+def _configure_cli_log(
+    log_path: Path | None,
+    log_format: str | None,
+    *,
+    reset_messages: bool = False,
+) -> None:
+    global _CLI_LOG_PATH, _CLI_LOG_FORMAT, _CLI_LOG_MESSAGES
+    if log_format is not None and log_format not in _CLI_LOG_FORMATS:
+        raise ValueError(f"Unknown CLI log format: {log_format}")
+    _CLI_LOG_PATH = log_path
+    _CLI_LOG_FORMAT = log_format
+    if reset_messages:
+        _CLI_LOG_MESSAGES = []
+
+
+def _set_active_cli_log_handle(log_handle: Any) -> None:
+    global _ACTIVE_CLI_LOG_HANDLE
+    _ACTIVE_CLI_LOG_HANDLE = log_handle
+
+
+def _cli_log_message_record(level: str, message: str) -> dict[str, str]:
+    return {
+        "logged_at": _utc_timestamp(),
+        "level": level,
+        "message": message,
+    }
+
+
+def _append_image_json_cli_message(log_path: Path, record: dict[str, str]) -> None:
+    try:
+        current = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else {}
+    except Exception:
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    messages = current.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+    messages.append(_redact_image_api_log(record))
+    current["messages"] = messages
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _log_cli_message(level: str, message: str) -> None:
+    record = _cli_log_message_record(level, message)
+    _CLI_LOG_MESSAGES.append(record)
+    if not _CLI_LOG_PATH or not _CLI_LOG_FORMAT:
+        return
+    try:
+        _CLI_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _CLI_LOG_FORMAT == "responses-event":
+            if _ACTIVE_CLI_LOG_HANDLE is not None:
+                _write_responses_log_event(
+                    _ACTIVE_CLI_LOG_HANDLE,
+                    f"codex_image_gen.{level}",
+                    {"level": level, "message": message},
+                )
+                _ACTIVE_CLI_LOG_HANDLE.flush()
+            else:
+                with _CLI_LOG_PATH.open("a", encoding="utf-8") as log_handle:
+                    _write_responses_log_event(
+                        log_handle,
+                        f"codex_image_gen.{level}",
+                        {"level": level, "message": message},
+                    )
+        elif _CLI_LOG_FORMAT == "image-jsonl":
+            if _ACTIVE_CLI_LOG_HANDLE is not None:
+                _write_image_api_stream_log_item(
+                    _ACTIVE_CLI_LOG_HANDLE,
+                    {"log": {"level": level, "message": message}},
+                )
+                _ACTIVE_CLI_LOG_HANDLE.flush()
+            else:
+                with _CLI_LOG_PATH.open("a", encoding="utf-8") as log_handle:
+                    _write_image_api_stream_log_item(
+                        log_handle,
+                        {"log": {"level": level, "message": message}},
+                    )
+        elif _CLI_LOG_FORMAT == "image-json":
+            _append_image_json_cli_message(_CLI_LOG_PATH, record)
+    except Exception:
+        return
 
 
 def _start_info(
@@ -624,6 +717,7 @@ def _stream_responses_raw(
                     request_payload=payload,
                 ),
             )
+    _info("--transport responses-raw is deprecated; use --transport responses.")
 
     headers = {
         "Authorization": "Bearer " + token,
@@ -675,6 +769,7 @@ def _stream_responses_raw(
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_handle = log_path.open("a", encoding="utf-8")
+            _set_active_cli_log_handle(log_handle)
         for raw in response:
             line = raw.decode("utf-8", "ignore").rstrip("\n")
             if not line.startswith("data:"):
@@ -722,6 +817,7 @@ def _stream_responses_raw(
             if image_b64:
                 return _final_image_bytes(image_b64, last_partial, final_path, verbose=verbose)
     finally:
+        _set_active_cli_log_handle(None)
         if log_handle:
             log_handle.close()
         response.close()
@@ -781,6 +877,7 @@ def _stream_responses_sdk(
     if log_path:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = log_path.open("w", encoding="utf-8")
+        _set_active_cli_log_handle(log_handle)
         _write_responses_log_event(
             log_handle,
             "codex_image_gen.start",
@@ -809,6 +906,8 @@ def _stream_responses_sdk(
         if log_handle:
             _write_responses_log_event(log_handle, "response.request_failed", details)
             log_handle.close()
+            _set_active_cli_log_handle(None)
+            log_handle = None
         else:
             _write_responses_failure_log(log_path, "response.request_failed", details)
         _die(
@@ -858,6 +957,9 @@ def _stream_responses_sdk(
         }
         if log_handle:
             _write_responses_sdk_log_item(log_handle, {"type": "response.stream_error", **details})
+            log_handle.close()
+            _set_active_cli_log_handle(None)
+            log_handle = None
         _die(
             _format_stream_failure(
                 f"Codex Responses SDK stream failed: {exc}",
@@ -868,6 +970,7 @@ def _stream_responses_sdk(
             )
         )
     finally:
+        _set_active_cli_log_handle(None)
         if log_handle:
             log_handle.close()
         close = getattr(stream, "close", None) if stream is not None else None
@@ -949,6 +1052,8 @@ def _image_api_log_record(
         record["status"] = status
     record["request"] = _redact_image_api_log(payload)
     record["response"] = _redact_image_api_log(response)
+    if _CLI_LOG_MESSAGES:
+        record["messages"] = _redact_image_api_log(_CLI_LOG_MESSAGES)
     return record
 
 
@@ -1026,24 +1131,28 @@ def _stream_image_api_response(
     last_item: Any = None
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_handle:
-        _write_image_api_stream_log_item(log_handle, {"request": request_options})
-        for event in stream:
-            item = _to_plain_data(event)
-            last_item = item
-            _write_image_api_stream_log_item(log_handle, {"event": item})
-            if save_partials and isinstance(item, dict):
-                partial_b64 = item.get("partial_image_b64")
-                if not partial_b64:
-                    partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
-                if _looks_like_image_base64(partial_b64):
-                    partial_count += 1
-                    partial_path = _partial_output_path(final_path, partial_count)
-                    partial_path.write_bytes(base64.b64decode(partial_b64))
-                    _info(f"Wrote partial {partial_path}")
-                    continue
-            image_b64 = _scan_final_image_base64(item)
-            if image_b64:
-                return base64.b64decode(image_b64)
+        _set_active_cli_log_handle(log_handle)
+        try:
+            _write_image_api_stream_log_item(log_handle, {"request": request_options})
+            for event in stream:
+                item = _to_plain_data(event)
+                last_item = item
+                _write_image_api_stream_log_item(log_handle, {"event": item})
+                if save_partials and isinstance(item, dict):
+                    partial_b64 = item.get("partial_image_b64")
+                    if not partial_b64:
+                        partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
+                    if _looks_like_image_base64(partial_b64):
+                        partial_count += 1
+                        partial_path = _partial_output_path(final_path, partial_count)
+                        partial_path.write_bytes(base64.b64decode(partial_b64))
+                        _info(f"Wrote partial {partial_path}")
+                        continue
+                image_b64 = _scan_final_image_base64(item)
+                if image_b64:
+                    return base64.b64decode(image_b64)
+        finally:
+            _set_active_cli_log_handle(None)
     _die(
         _format_stream_failure(
             "No generated image was found in the streamed Codex Image API response.",
@@ -1068,6 +1177,7 @@ def _stream_json_image_api_response(
     last_item: Any = None
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("a", encoding="utf-8")
+    _set_active_cli_log_handle(log_handle)
     try:
         _write_image_api_stream_log_item(log_handle, {"request": request_options})
         for raw in response:
@@ -1097,6 +1207,7 @@ def _stream_json_image_api_response(
             if image_b64:
                 return base64.b64decode(image_b64)
     finally:
+        _set_active_cli_log_handle(None)
         log_handle.close()
         response.close()
     _die(
@@ -1232,8 +1343,10 @@ def _run_image_api(
         client="openai-sdk",
     )
     if options.get("stream"):
+        _configure_cli_log(log_path, "image-jsonl")
         _write_image_api_stream_start_log(log_path, start_info)
     else:
+        _configure_cli_log(log_path, "image-json")
         _write_image_api_start_log(log_path, options, start_info)
     try:
         response = client.images.generate(**options)
@@ -1343,18 +1456,22 @@ def main() -> int:
         print(json.dumps(preview, ensure_ascii=False, indent=2))
         return 0
 
+    log_path = _log_path(out_path)
+    if _uses_responses_transport(args):
+        _configure_cli_log(log_path, "responses-event", reset_messages=True)
+    else:
+        _configure_cli_log(log_path, "image-json", reset_messages=True)
     token, account_id = _read_codex_auth(args.auth_json)
     started = time.time()
     final_written = False
     if _uses_responses_transport(args):
         payload = _build_payload(args, prompt)
         if args.transport in DEPRECATED_TRANSPORTS:
-            _info("--transport responses-raw is deprecated; use --transport responses.")
             image_bytes, final_written = _stream_responses_raw(
                 payload,
                 token,
                 account_id,
-                _log_path(out_path),
+                log_path,
                 out_path,
                 save_partials=bool(args.partial_images),
                 verbose=args.verbose,
@@ -1365,7 +1482,7 @@ def main() -> int:
                 payload,
                 token,
                 account_id,
-                _log_path(out_path),
+                log_path,
                 out_path,
                 save_partials=bool(args.partial_images),
                 verbose=args.verbose,
@@ -1378,7 +1495,7 @@ def main() -> int:
             token,
             account_id,
             out_path,
-            _log_path(out_path),
+            log_path,
         )
     if not final_written:
         out_path.write_bytes(image_bytes)
