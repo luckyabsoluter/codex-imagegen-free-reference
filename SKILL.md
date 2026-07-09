@@ -40,7 +40,7 @@ Rules:
 
 Codex API direct save-path policy:
 - Save generated originals under the selected Codex home's `generated_images_free_reference/` by default.
-- Save logs under the same `generated_images_free_reference/` directory by default. Logs begin with start metadata for endpoint, transport, output path, and request payload. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
+- Save logs under the same `generated_images_free_reference/` directory by default. Logs begin with start metadata for endpoint, transport, output path, and request payload. Responses event blocks include a separate UTC `logged_at:` line; Image API JSON/JSONL records use top-level `logged_at` metadata. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
 - File names must combine a UUID and a human-readable name: `<uuid>-<name>.<ext>`.
 - Log names must use the generated image name with `.log` appended: `<uuid>-<name>.<ext>.log`.
 - If the user names a project destination, copy the selected output there with `--copy-to`; keep the Codex-home original as the generated source.
@@ -318,7 +318,7 @@ The Codex direct CLI passes advanced options to the hosted Responses `image_gene
 - Use `--partial-images 1..3` only when streamed previews are useful; final project output still comes from the completed image. If the last partial is byte-identical to the completed image, the CLI renames that partial to the final output path.
 - Use `--hide-response-details` when failure output may be fed back into a model context; redacted log files still keep response details for inspection.
 - Use `--verbose` only when debug details are useful.
-- Logs are written next to the generated original and begin with start metadata. Responses logs are redacted event logs; Image API logs are redacted JSON.
+- Logs are written next to the generated original, begin with start metadata, and timestamp each event as log metadata. Responses logs are redacted event logs; Image API logs are redacted JSON.
 - `--model` selects the model for the active transport. `--image-model` overrides `--model` for Image API calls and maps to the tool-level `model` field for `--transport responses`. `--background transparent` requires a transparency-capable image model and a transparent-capable output format.
 
 ## gpt-image-2 guidance for CLI fallback

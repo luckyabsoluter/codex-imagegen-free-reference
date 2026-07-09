@@ -293,6 +293,13 @@ def _utc_timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _log_record_with_timestamp(value: Any) -> Any:
+    plain = _to_plain_data(value)
+    if isinstance(plain, dict):
+        return {**plain, "logged_at": _utc_timestamp()}
+    return {"value": plain, "logged_at": _utc_timestamp()}
+
+
 def _start_info(
     *,
     endpoint: str,
@@ -516,19 +523,6 @@ def _redact_responses_stream_item(value: Any) -> Any:
     return value
 
 
-def _redact_responses_log_line(line: str) -> str:
-    if not line.startswith("data:"):
-        return line
-    data = line[5:].strip()
-    if not data or data == "[DONE]":
-        return line
-    try:
-        item = json.loads(data)
-    except json.JSONDecodeError:
-        return line
-    return "data: " + json.dumps(_redact_responses_stream_item(item), ensure_ascii=False)
-
-
 def _compact_json(value: Any, *, limit: int = 2000) -> str:
     text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     if len(text) > limit:
@@ -597,6 +591,7 @@ def _responses_event_type(item: Any) -> str:
 def _write_responses_log_event(log_handle: Any, event_type: str, data: Any) -> None:
     redacted = _redact_responses_stream_item(_to_plain_data(data))
     log_handle.write(f"event: {event_type}\n")
+    log_handle.write(f"logged_at: {_utc_timestamp()}\n")
     log_handle.write("data: " + json.dumps(redacted, ensure_ascii=False) + "\n\n")
 
 
@@ -682,9 +677,13 @@ def _stream_responses_raw(
             log_handle = log_path.open("a", encoding="utf-8")
         for raw in response:
             line = raw.decode("utf-8", "ignore").rstrip("\n")
-            if log_handle:
-                log_handle.write(_redact_responses_log_line(line) + "\n")
             if not line.startswith("data:"):
+                if log_handle and line:
+                    _write_responses_log_event(
+                        log_handle,
+                        "response.raw_line",
+                        {"line": line},
+                    )
                 continue
             data = line[5:].strip()
             if not data or data == "[DONE]":
@@ -692,8 +691,16 @@ def _stream_responses_raw(
             try:
                 item = json.loads(data)
             except json.JSONDecodeError:
+                if log_handle:
+                    _write_responses_log_event(
+                        log_handle,
+                        "response.raw_data",
+                        {"data": data},
+                    )
                 continue
             last_item = item
+            if log_handle:
+                _write_responses_log_event(log_handle, _responses_event_type(item), item)
             if isinstance(item, dict) and item.get("type") == "response.output_item.done":
                 last_output_item_done = item
             if (
@@ -935,7 +942,7 @@ def _image_api_log_record(
     start_info: dict[str, Any] | None = None,
     status: str | None = None,
 ) -> dict[str, Any]:
-    record: dict[str, Any] = {}
+    record: dict[str, Any] = {"logged_at": _utc_timestamp()}
     if start_info is not None:
         record["start"] = _redact_image_api_log(start_info)
     if status is not None:
@@ -1001,7 +1008,7 @@ def _write_image_api_stream_start_log(log_path: Path, start_info: dict[str, Any]
 
 
 def _write_image_api_stream_log_item(log_handle: Any, item: Any) -> None:
-    redacted = _redact_image_api_log(item)
+    redacted = _redact_image_api_log(_log_record_with_timestamp(item))
     log_handle.write(json.dumps(redacted, ensure_ascii=False) + "\n")
 
 
