@@ -74,6 +74,7 @@ DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_RESPONSES_MODEL = "gpt-5.5"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
 FINAL_IMAGE_KEYS = {"result", "image", "b64_json"}
 IMAGE_PAYLOAD_KEYS = FINAL_IMAGE_KEYS | {"partial_image_b64", "image_url"}
 ALLOWED_ACTIONS = {"generate", "edit", "auto"}
@@ -135,6 +136,10 @@ def _effective_responses_model(args: argparse.Namespace) -> str:
     return args.model or DEFAULT_RESPONSES_MODEL
 
 
+def _effective_timeout(args: argparse.Namespace) -> float:
+    return args.timeout
+
+
 def _uses_image_edit_endpoint(args: argparse.Namespace) -> bool:
     return bool(args.reference or args.mask or args.action == "edit")
 
@@ -193,6 +198,9 @@ def _validate_tool_options(args: argparse.Namespace) -> None:
     _validate_choice(args.transport, ALLOWED_TRANSPORTS, "--transport")
     image_model = _effective_image_model(args) if args.transport == "image-api" else args.image_model
     _validate_size(args.size, image_model)
+
+    if args.timeout <= 0:
+        _die("--timeout must be greater than 0 seconds.")
 
     if args.output_compression is not None:
         if args.output_compression < 0 or args.output_compression > 100:
@@ -399,6 +407,7 @@ def _start_info(
     transport: str,
     final_path: Path,
     request_payload: dict[str, Any],
+    timeout_seconds: float,
     client: str | None = None,
 ) -> dict[str, Any]:
     info: dict[str, Any] = {
@@ -407,6 +416,7 @@ def _start_info(
         "endpoint": endpoint,
         "transport": transport,
         "output": str(final_path),
+        "timeout_seconds": timeout_seconds,
         "request": request_payload,
     }
     if client:
@@ -700,6 +710,7 @@ def _stream_responses_raw(
     log_path: Path | None,
     final_path: Path,
     *,
+    timeout_seconds: float,
     save_partials: bool,
     verbose: bool,
     show_response_details: bool,
@@ -715,6 +726,7 @@ def _stream_responses_raw(
                     transport="responses-raw",
                     final_path=final_path,
                     request_payload=payload,
+                    timeout_seconds=timeout_seconds,
                 ),
             )
     _info("--transport responses-raw is deprecated; use --transport responses.")
@@ -735,7 +747,7 @@ def _stream_responses_raw(
         method="POST",
     )
     try:
-        response = request.urlopen(req, timeout=600)
+        response = request.urlopen(req, timeout=timeout_seconds)
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", "ignore")
         details = {"status": exc.code, "body": body[:2000], "endpoint": CODEX_RESPONSES_URL}
@@ -832,7 +844,7 @@ def _stream_responses_raw(
     )
 
 
-def _create_codex_openai_client(token: str, account_id: str | None) -> Any:
+def _create_codex_openai_client(token: str, account_id: str | None, timeout_seconds: float) -> Any:
     try:
         from openai import OpenAI
     except ImportError:
@@ -845,6 +857,7 @@ def _create_codex_openai_client(token: str, account_id: str | None) -> Any:
         api_key=token,
         base_url=CODEX_IMAGE_API_BASE_URL,
         default_headers=headers,
+        timeout=timeout_seconds,
     )
 
 
@@ -867,11 +880,12 @@ def _stream_responses_sdk(
     log_path: Path | None,
     final_path: Path,
     *,
+    timeout_seconds: float,
     save_partials: bool,
     verbose: bool,
     show_response_details: bool,
 ) -> tuple[bytes, bool]:
-    client = _create_codex_openai_client(token, account_id)
+    client = _create_codex_openai_client(token, account_id, timeout_seconds)
     log_handle = None
     stream = None
     if log_path:
@@ -886,6 +900,7 @@ def _stream_responses_sdk(
                 transport="responses",
                 final_path=final_path,
                 request_payload=payload,
+                timeout_seconds=timeout_seconds,
                 client="openai-sdk",
             ),
         )
@@ -894,7 +909,7 @@ def _stream_responses_sdk(
         stream = client.responses.create(
             **payload,
             extra_headers={"OpenAI-Beta": DEFAULT_BETA_HEADER},
-            timeout=600,
+            timeout=timeout_seconds,
         )
     except Exception as exc:
         details = {
@@ -1226,6 +1241,7 @@ def _request_image_api_edit(
     account_id: str | None,
     log_path: Path,
     *,
+    timeout_seconds: float,
     start_info: dict[str, Any],
     show_response_details: bool,
 ) -> bytes:
@@ -1245,7 +1261,7 @@ def _request_image_api_edit(
             CODEX_IMAGE_EDITS_URL,
             headers=headers,
             json=payload,
-            timeout=600,
+            timeout=timeout_seconds,
         )
         if response.status_code >= 400:
             failure = _write_image_api_failure_log(
@@ -1314,6 +1330,7 @@ def _run_image_api(
     final_path: Path,
     log_path: Path,
 ) -> bytes:
+    timeout_seconds = _effective_timeout(args)
     if _uses_image_edit_endpoint(args):
         payload = _build_image_api_edit_payload(args, prompt)
         start_info = _start_info(
@@ -1321,6 +1338,7 @@ def _run_image_api(
             transport="image-api",
             final_path=final_path,
             request_payload=payload,
+            timeout_seconds=timeout_seconds,
             client="httpx-json",
         )
         _write_image_api_start_log(log_path, payload, start_info)
@@ -1329,17 +1347,19 @@ def _run_image_api(
             token,
             account_id,
             log_path,
+            timeout_seconds=timeout_seconds,
             start_info=start_info,
             show_response_details=not args.hide_response_details,
         )
 
-    client = _create_codex_openai_client(token, account_id)
+    client = _create_codex_openai_client(token, account_id, timeout_seconds)
     options = _build_image_api_options(args, prompt)
     start_info = _start_info(
         endpoint=CODEX_IMAGE_GENERATIONS_URL,
         transport="image-api",
         final_path=final_path,
         request_payload=options,
+        timeout_seconds=timeout_seconds,
         client="openai-sdk",
     )
     if options.get("stream"):
@@ -1349,7 +1369,7 @@ def _run_image_api(
         _configure_cli_log(log_path, "image-json")
         _write_image_api_start_log(log_path, options, start_info)
     try:
-        response = client.images.generate(**options)
+        response = client.images.generate(**options, timeout=timeout_seconds)
     except Exception as exc:
         failure = _write_image_api_failure_log(
             log_path,
@@ -1415,6 +1435,12 @@ def main() -> int:
     parser.add_argument("--moderation", help="Optional image moderation level: auto or low.")
     parser.add_argument("--action", help="Optional image tool action: generate, edit, or auto.")
     parser.add_argument("--partial-images", type=int, help="Number of streamed partial images to request, 0-3.")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help=f"Network request timeout in seconds. Defaults to {DEFAULT_REQUEST_TIMEOUT_SECONDS}.",
+    )
     parser.add_argument("--input-fidelity", help="Optional input fidelity for models that allow explicit selection: high or low.")
     parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
     parser.add_argument("--instructions")
@@ -1441,6 +1467,7 @@ def main() -> int:
                 "log": str(_log_path(out_path)),
                 "transport": args.transport,
                 "deprecated": args.transport in DEPRECATED_TRANSPORTS,
+                "timeout_seconds": _effective_timeout(args),
                 **_redact_preview_payload(payload),
             }
         else:
@@ -1451,6 +1478,7 @@ def main() -> int:
                 else CODEX_IMAGE_GENERATIONS_URL,
                 "output": str(out_path),
                 "log": str(_log_path(out_path)),
+                "timeout_seconds": _effective_timeout(args),
                 **_redact_image_api_preview(args, options),
             }
         print(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -1473,6 +1501,7 @@ def main() -> int:
                 account_id,
                 log_path,
                 out_path,
+                timeout_seconds=_effective_timeout(args),
                 save_partials=bool(args.partial_images),
                 verbose=args.verbose,
                 show_response_details=not args.hide_response_details,
@@ -1484,6 +1513,7 @@ def main() -> int:
                 account_id,
                 log_path,
                 out_path,
+                timeout_seconds=_effective_timeout(args),
                 save_partials=bool(args.partial_images),
                 verbose=args.verbose,
                 show_response_details=not args.hide_response_details,

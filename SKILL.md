@@ -28,7 +28,7 @@ Within OpenAI Image API fallback, the CLI exposes three subcommands:
 Rules:
 - Use `scripts/codex_image_gen.py` by default when Codex auth is available, especially for local reference images and project-bound output paths.
 - Codex API direct mode defaults to `https://chatgpt.com/backend-api/codex/responses` with the hosted Responses `image_generation` tool.
-- Codex API direct mode exposes image controls through `scripts/codex_image_gen.py`: `--model`, `--image-model`, `--size`, `--quality`, `--background`, `--output-format`, `--output-compression`, `--moderation`, `--action`, `--partial-images`, `--input-fidelity`, `--mask`, and `--hide-response-details`. Use `--transport image-api` only when the Codex Image API generation/edit route is specifically needed.
+- Codex API direct mode exposes image controls through `scripts/codex_image_gen.py`: `--model`, `--image-model`, `--size`, `--quality`, `--background`, `--output-format`, `--output-compression`, `--moderation`, `--action`, `--partial-images`, `--timeout`, `--input-fidelity`, `--mask`, and `--hide-response-details`. Use `--transport image-api` only when the Codex Image API generation/edit route is specifically needed.
 - Use the built-in `image_gen` tool only when the harness exposes it and the task is simpler to perform in the conversation context than through the scriptable Codex API direct path.
 - Use the OpenAI Image API fallback `scripts/image_gen.py` only when the user explicitly asks for the public OpenAI API/model path or confirms a true/native transparency fallback. This path requires `OPENAI_API_KEY`.
 - Do not create one-off SDK runners for routine image generation. Use `scripts/codex_image_gen.py` for Codex-auth work or `scripts/image_gen.py` for explicit OpenAI API fallback work.
@@ -316,6 +316,7 @@ The Codex direct CLI passes advanced options to the hosted Responses `image_gene
 - Use `--output-format png|webp|jpeg`; use `--output-compression 0..100` only with `webp` or `jpeg`.
 - Use `--reference` repeatedly for local inputs. For an edit target plus mask, pass the edit target as the first `--reference` and the mask through `--mask`.
 - Use `--partial-images 1..3` only when streamed previews are useful; final project output still comes from the completed image. If the last partial is byte-identical to the completed image, the CLI renames that partial to the final output path.
+- Use `--timeout <seconds>` to override the default 600-second network request timeout across Responses and Image API transports.
 - Use `--hide-response-details` when failure output may be fed back into a model context; redacted log files still keep response details for inspection.
 - Use `--verbose` only when debug details are useful.
 - Logs are written next to the generated original, begin with start metadata, and timestamp each event as log metadata. CLI info, debug, and error messages are also logged as metadata. Responses logs are redacted event logs; Image API logs are redacted JSON.
