@@ -4,8 +4,10 @@ This project is an extension of the built-in `imagegen` skill in Codex. It intro
 
 ## Features
 
-- **Reference Image Selection:** This tool gives you full control to explicitly choose your reference image, unlike the built-in tool which automatically manages them without manual selection.
-- **Codex API Direct Integration:** The original fallback CLI tool relied on the standard OpenAI API. However, for models like `gpt-image-2` to function correctly, requests must be routed through Codex. This tool achieves this by sending requests to the Codex base URL instead of the OpenAI API base URL, ensuring the model operates precisely as intended.
+- **Reference Image Selection:** This tool gives you full control to explicitly choose your reference images, unlike the built-in tool which automatically manages them without manual selection.
+- **Codex API Direct Integration:** This tool routes requests through the Codex base URL to ensure Codex-auth image models like `gpt-image-2` function correctly. The original fallback CLI relied on the standard OpenAI API, which is incompatible with these workflows.
+- **Transport Selection:** This tool allows you to select the request path—either Codex Responses hosted `image_generation` or the Codex Image API generation/edit route—using the `--transport` flag. In contrast, the built-in tool is restricted to the Responses hosted-tool flow.
+- **Model and Reasoning Selection:** This tool allows you to customize the image model and `reasoning.effort` (for Responses requests) using the `--model` and `--reasoning-effort` flags. The built-in tool relies on Codex's default settings (currently `gpt-5.5` with medium reasoning), which are subject to change.
 
 > **Note:** Direct-mode original images and redacted request/response logs are stored under `~/.codex/generated_images_free_reference/`. Outputs are copied from this directory to your project, which means saved project assets are intentionally duplicated.
 
