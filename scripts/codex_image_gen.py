@@ -75,6 +75,7 @@ DEFAULT_RESPONSES_MODEL = "gpt-5.5"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
+HELP_FORMATTER_WIDTH = 120
 FINAL_IMAGE_KEYS = {"result", "image", "b64_json"}
 IMAGE_PAYLOAD_KEYS = FINAL_IMAGE_KEYS | {"partial_image_b64", "image_url"}
 ALLOWED_ACTIONS = {"generate", "edit", "auto"}
@@ -532,7 +533,7 @@ def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
         content.append({"type": "input_image", "image_url": _data_url(Path(reference))})
     content.append({"type": "input_text", "text": prompt})
 
-    return {
+    payload: dict[str, Any] = {
         "model": _effective_responses_model(args),
         "instructions": args.instructions or "",
         "input": [{"role": "user", "content": content}],
@@ -543,6 +544,9 @@ def _build_payload(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
         "store": False,
         "include": [],
     }
+    if args.reasoning_effort is not None:
+        payload["reasoning"] = {"effort": args.reasoning_effort}
+    return payload
 
 
 def _build_image_api_options(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
@@ -1406,7 +1410,8 @@ def _run_image_api(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate images through Codex auth with optional local reference images."
+        description="Generate images through Codex auth with optional local reference images.",
+        formatter_class=lambda prog: argparse.HelpFormatter(prog, width=HELP_FORMATTER_WIDTH),
     )
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file")
@@ -1426,6 +1431,16 @@ def main() -> int:
         ),
     )
     parser.add_argument("--model", help="Model for the selected transport.")
+    parser.add_argument(
+        "--reasoning-effort",
+        help=(
+            "Optional Responses reasoning.effort value. Omit this option to use the "
+            "model/server default. The default Responses model gpt-5.5 supports "
+            "none, low, medium (default), high, and xhigh; other models can differ, "
+            "and additional values may be supported. See "
+            "https://developers.openai.com/api/docs/guides/reasoning."
+        ),
+    )
     parser.add_argument("--image-model", help="Optional GPT Image model; for image-api this overrides --model.")
     parser.add_argument("--output-format", default=DEFAULT_OUTPUT_FORMAT)
     parser.add_argument("--size", help="Optional image size, such as auto, 1024x1024, or 2048x1152.")
