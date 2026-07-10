@@ -68,7 +68,7 @@ The tool object can also carry optional image-generation controls:
 
 Important observations:
 
-- The default Responses transport uses the SDK streaming interface; partial image previews can arrive before the final completed image. Save only the completed `image_generation_call.result` as the final artifact.
+- The default Responses transport uses the SDK streaming interface; partial image previews can arrive before the final completed image. Never treat a partial image preview as the completed image, even if it looks usable. Save only the completed `image_generation_call.result` as the final artifact.
 - The default Responses transport rejects non-streaming requests with `Stream must be set to true`.
 - Local reference images are attached to the default Responses transport as `input_image` items using `data:image/...;base64,...` URLs.
 - `--transport responses-raw` is deprecated and exists only to keep the previous direct SSE caller available for debugging.
@@ -167,7 +167,7 @@ Validation notes:
 - For other explicit image models, the CLI performs local syntax validation only.
 - `--background transparent` requires `png` or `webp`, a transparency-capable image model, and not `gpt-image-2*`.
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
-- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
+- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. Partial image previews are not completed images and must not be used as final artifacts. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
 - `--timeout` applies to the raw Responses fallback, SDK Responses calls, Image API generation, and Image API edit requests.
 - `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the selected model and server defaults apply. The default Responses model `gpt-5.5` supports `none`, `low`, `medium` (default), `high`, and `xhigh`; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
