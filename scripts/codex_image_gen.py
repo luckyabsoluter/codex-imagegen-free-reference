@@ -18,7 +18,9 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import time
 from typing import Any
@@ -162,6 +164,52 @@ class RunContext:
     account_id: str | None
     timeout_seconds: float
     started: float
+    invocation: dict[str, Any]
+    inputs: dict[str, Any]
+
+
+class ExecutionMetadata:
+    @staticmethod
+    def resolved_path(value: str, cwd: Path) -> str:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = cwd / path
+        return str(path.resolve())
+
+    @staticmethod
+    def command_text(argv: list[str]) -> str:
+        if os.name == "nt":
+            return subprocess.list2cmdline(argv)
+        return shlex.join(argv)
+
+    @classmethod
+    def build(cls, argv: list[str], config: RequestConfig) -> tuple[dict[str, Any], dict[str, Any]]:
+        cwd = Path.cwd().resolve()
+        command_argv = [sys.executable, str(Path(__file__).resolve()), *argv]
+        invocation = {
+            "cwd": str(cwd),
+            "command": cls.command_text(command_argv),
+            "argv": command_argv,
+        }
+        inputs = {
+            "references": [
+                {
+                    "index": index,
+                    "path": path,
+                    "resolved_path": cls.resolved_path(path, cwd),
+                }
+                for index, path in enumerate(config.reference, start=1)
+            ],
+            "mask": (
+                {
+                    "path": config.mask,
+                    "resolved_path": cls.resolved_path(config.mask, cwd),
+                }
+                if config.mask
+                else None
+            ),
+        }
+        return invocation, inputs
 
 
 class Redaction:
@@ -449,6 +497,8 @@ class Logging:
         endpoint: str,
         transport: str,
         final_path: Path,
+        invocation: dict[str, Any],
+        inputs: dict[str, Any],
         request_payload: dict[str, Any],
         timeout_seconds: float,
         client: str | None = None,
@@ -460,6 +510,8 @@ class Logging:
             "transport": transport,
             "output": str(final_path),
             "timeout_seconds": timeout_seconds,
+            "invocation": invocation,
+            "inputs": inputs,
             "request": request_payload,
         }
         if client:
@@ -977,6 +1029,8 @@ class ResponsesTransport:
                         endpoint=CODEX_RESPONSES_URL,
                         transport="responses-raw",
                         final_path=run.output_path,
+                        invocation=run.invocation,
+                        inputs=run.inputs,
                         request_payload=payload,
                         timeout_seconds=run.timeout_seconds,
                     ),
@@ -1122,6 +1176,8 @@ class ResponsesTransport:
                     endpoint=CODEX_RESPONSES_URL,
                     transport="responses",
                     final_path=run.output_path,
+                    invocation=run.invocation,
+                    inputs=run.inputs,
                     request_payload=payload,
                     timeout_seconds=run.timeout_seconds,
                     client="openai-sdk",
@@ -1422,6 +1478,8 @@ class ImageApiTransport:
                 endpoint=CODEX_IMAGE_EDITS_URL,
                 transport="image-api",
                 final_path=run.output_path,
+                invocation=run.invocation,
+                inputs=run.inputs,
                 request_payload=payload,
                 timeout_seconds=run.timeout_seconds,
                 client="httpx-json",
@@ -1435,6 +1493,8 @@ class ImageApiTransport:
             endpoint=CODEX_IMAGE_GENERATIONS_URL,
             transport="image-api",
             final_path=run.output_path,
+            invocation=run.invocation,
+            inputs=run.inputs,
             request_payload=options,
             timeout_seconds=run.timeout_seconds,
             client="openai-sdk",
@@ -1583,12 +1643,13 @@ class Cli:
             **Redaction.image_api_preview(config, options),
         }
 
-    def execute(self, config: RequestConfig, prompt: str, out_path: Path) -> int:
+    def execute(self, config: RequestConfig, prompt: str, out_path: Path, argv: list[str]) -> int:
         log_path = Paths.log_path(out_path)
         if config.uses_responses_transport:
             self.logger.configure(log_path, "responses-event", reset_messages=True)
         else:
             self.logger.configure(log_path, "image-json", reset_messages=True)
+        invocation, inputs = ExecutionMetadata.build(argv, config)
         token, account_id = Paths.read_codex_auth(config.auth_json, self.logger)
         run = RunContext(
             output_path=out_path,
@@ -1597,6 +1658,8 @@ class Cli:
             account_id=account_id,
             timeout_seconds=config.timeout_seconds,
             started=time.time(),
+            invocation=invocation,
+            inputs=inputs,
         )
 
         final_written = False
@@ -1620,7 +1683,8 @@ class Cli:
         return 0
 
     def main(self, argv: list[str] | None = None) -> int:
-        config = self.parse_config(argv)
+        effective_argv = list(sys.argv[1:] if argv is None else argv)
+        config = self.parse_config(effective_argv)
         Validation.validate(config, self.logger)
         prompt = self.read_prompt(config)
         out_path = Paths.output_path(config.name or prompt, config.output_format, config.auth_json)
@@ -1629,7 +1693,7 @@ class Cli:
             print(json.dumps(self.dry_run_preview(config, prompt, out_path), ensure_ascii=False, indent=2))
             return 0
 
-        return self.execute(config, prompt, out_path)
+        return self.execute(config, prompt, out_path, effective_argv)
 
 
 def main() -> int:

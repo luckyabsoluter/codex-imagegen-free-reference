@@ -40,7 +40,7 @@ Rules:
 
 Codex API direct save-path policy:
 - Save generated originals under the selected Codex home's `generated_images_free_reference/` by default.
-- Save logs under the same `generated_images_free_reference/` directory by default. Logs begin with start metadata for endpoint, transport, output path, and request payload. Responses event blocks include a separate UTC `logged_at:` line; Image API JSON/JSONL records use top-level `logged_at` metadata. CLI info, debug, and error messages are logged as metadata without changing response payloads. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
+- Save logs under the same `generated_images_free_reference/` directory by default. Logs begin with start metadata for endpoint, transport, output path, invocation, ordered reference and mask paths, and request payload. Invocation metadata keeps the working directory, a platform-quoted equivalent command, and the complete argument array. Input paths keep both the supplied value and the resolved absolute path. Responses event blocks include a separate UTC `logged_at:` line; Image API JSON/JSONL records use top-level `logged_at` metadata. CLI info, debug, and error messages are logged as metadata without changing response payloads. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
 - File names must combine a UUID and a human-readable name: `<uuid>-<name>.<ext>`.
 - Log names must use the generated image name with `.log` appended: `<uuid>-<name>.<ext>.log`.
 - If the user names a project destination, copy the selected output there with `--copy-to`; keep the Codex-home original as the generated source.
@@ -320,7 +320,7 @@ The Codex direct CLI passes advanced options to the hosted Responses `image_gene
 - Use `--reasoning-effort <value>` only when the Responses request should explicitly set `reasoning.effort`; omit it to let the selected model and server defaults apply. The default Responses model `gpt-5.5` supports `none`, `low`, `medium` (default), `high`, and `xhigh`; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - Use `--hide-response-details` when failure output may be fed back into a model context; redacted log files still keep response details for inspection.
 - Use `--verbose` only when debug details are useful.
-- Logs are written next to the generated original, begin with start metadata, and timestamp each event as log metadata. CLI info, debug, and error messages are also logged as metadata. Responses logs are redacted event logs; Image API logs are redacted JSON.
+- Logs are written next to the generated original, begin with start metadata for the invocation, ordered reference and mask paths, and request, and timestamp each event as log metadata. CLI info, debug, and error messages are also logged as metadata. Responses logs are redacted event logs; Image API logs are redacted JSON.
 - `--model` selects the model for the active transport. `--image-model` overrides `--model` for Image API calls and maps to the tool-level `model` field for `--transport responses`. `--background transparent` requires a transparency-capable image model and a transparent-capable output format.
 
 ## gpt-image-2 guidance for CLI fallback

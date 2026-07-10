@@ -117,10 +117,42 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
-Default log names append `.log` to the generated original name. Logs begin with start metadata for endpoint, transport, output path, and request payload. Responses event blocks include a separate UTC `logged_at:` line; Image API JSON/JSONL records use top-level `logged_at` metadata. CLI info, debug, and error messages are logged as metadata without changing response payloads. Image API logs are redacted JSON request/response records; Responses logs keep event structure while redacting image payloads:
+Default log names append `.log` to the generated original name. Logs begin with start metadata for endpoint, transport, output path, invocation, ordered reference and mask paths, and request payload. The invocation includes the working directory, a platform-quoted equivalent command, and the complete argument array. Each input path includes the supplied value and the absolute path resolved from the invocation working directory. Responses event blocks include a separate UTC `logged_at:` line; Image API JSON/JSONL records use top-level `logged_at` metadata. CLI info, debug, and error messages are logged as metadata without changing response payloads. Image API logs are redacted JSON request/response records; Responses logs keep event structure while redacting image payloads:
 
 ```text
 <uuid>-<human-readable-name>.<ext>.log
+```
+
+The start metadata uses this shape before the existing redacted request payload:
+
+```json
+{
+  "invocation": {
+    "cwd": "/workspace/project",
+    "command": "/usr/bin/python /skills/codex-imagegen-free-reference/scripts/codex_image_gen.py --reference references/product.png --prompt 'Create a studio image'",
+    "argv": [
+      "/usr/bin/python",
+      "/skills/codex-imagegen-free-reference/scripts/codex_image_gen.py",
+      "--reference",
+      "references/product.png",
+      "--prompt",
+      "Create a studio image"
+    ]
+  },
+  "inputs": {
+    "references": [
+      {
+        "index": 1,
+        "path": "references/product.png",
+        "resolved_path": "/workspace/project/references/product.png"
+      }
+    ],
+    "mask": null
+  },
+  "request": {
+    "model": "gpt-5.5"
+  }
+}
 ```
 
 Examples:
@@ -172,7 +204,7 @@ Validation notes:
 - `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the selected model and server defaults apply. The default Responses model `gpt-5.5` supports `none`, `low`, `medium` (default), `high`, and `xhigh`; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.
-- The CLI writes `<final-path>.log` next to the Codex-home original. Logs start with endpoint, transport, output path, and request metadata, and each event timestamp is stored as log metadata. CLI info, debug, and error messages are logged as metadata. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
+- The CLI writes `<final-path>.log` next to the Codex-home original. Logs start with endpoint, transport, output path, invocation, ordered input paths, and request metadata, and each event timestamp is stored as log metadata. CLI info, debug, and error messages are logged as metadata. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
 
 ## CLI examples
 
