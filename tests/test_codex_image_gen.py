@@ -10,6 +10,7 @@ import subprocess
 import sys
 import unittest
 from unittest import mock
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,18 +117,41 @@ class StartLogTests(unittest.TestCase):
         self.assertNotIn("access_token", json.dumps(record))
 
     def test_image_api_log_keeps_request_and_redacts_image_data(self) -> None:
-        record = self.logger.image_api_log_record(
-            self.payload,
-            None,
-            start_info=self.start_info("image-api"),
-            status="started",
+        handle = StringIO()
+        self.logger.write_image_api_log_event(handle, "codex_image_gen.start", self.start_info("image-api"))
+        record = json.loads(handle.getvalue())
+
+        self.assertEqual(record["event"], "codex_image_gen.start")
+        self.assertEqual(record["data"]["invocation"], self.invocation)
+        self.assertEqual(record["data"]["inputs"], self.inputs)
+        self.assertEqual(record["data"]["request"]["model"], "gpt-5.5")
+        self.assertTrue(record["data"]["request"]["input"][0]["content"][0]["image_url"].startswith("<redacted "))
+        self.assertNotIn("access_token", json.dumps(record))
+
+    def test_image_api_log_appends_start_response_and_cli_records(self) -> None:
+        log_path = ROOT / f"codex-image-gen-{uuid.uuid4()}.test.log"
+        self.addCleanup(log_path.unlink, missing_ok=True)
+        existing_record = {"logged_at": "earlier", "event": "existing", "data": {"preserved": True}}
+        with log_path.open("x", encoding="utf-8") as log_handle:
+            log_handle.write(json.dumps(existing_record) + "\n")
+
+        self.logger.configure(log_path, "image-jsonl")
+        self.logger.write_image_api_start_log(log_path, self.start_info("image-api"))
+        self.logger.log_cli_message("info", "Request completed")
+        self.logger.write_image_api_response_log(
+            log_path,
+            {"data": [{"b64_json": "secret" * 500}]},
+            status="completed",
         )
 
-        self.assertEqual(record["start"]["invocation"], self.invocation)
-        self.assertEqual(record["start"]["inputs"], self.inputs)
-        self.assertEqual(record["request"]["model"], "gpt-5.5")
-        self.assertTrue(record["request"]["input"][0]["content"][0]["image_url"].startswith("<redacted "))
-        self.assertNotIn("access_token", json.dumps(record))
+        records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(records[0], existing_record)
+        self.assertEqual(
+            [record["event"] for record in records[1:]],
+            ["codex_image_gen.start", "codex_image_gen.info", "image_api.response"],
+        )
+        self.assertEqual(records[3]["data"]["status"], "completed")
+        self.assertTrue(records[3]["data"]["response"]["data"][0]["b64_json"].startswith("<redacted "))
 
 
 class CliTests(unittest.TestCase):

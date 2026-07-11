@@ -117,7 +117,7 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
-Default log names append `.log` to the generated original name. Logs begin with start metadata for endpoint, transport, output path, invocation, ordered reference and mask paths, and request payload. The invocation includes the working directory, a platform-quoted equivalent command, and the complete argument array. Each input path includes the supplied value and the absolute path resolved from the invocation working directory. Responses event blocks include a separate UTC `logged_at:` line; Image API JSON/JSONL records use top-level `logged_at` metadata. CLI info, debug, and error messages are logged as metadata without changing response payloads. Image API logs are redacted JSON request/response records; Responses logs keep event structure while redacting image payloads:
+Default log names append `.log` to the generated original name. Logs are append-only: the CLI writes start metadata once, then appends response, failure, and CLI-message events without changing earlier records. Start metadata includes the endpoint, transport, output path, invocation, ordered reference and mask paths, and request payload. The invocation includes the working directory, a platform-quoted equivalent command, and the complete argument array. Each input path includes the supplied value and the absolute path resolved from the invocation working directory. Responses event blocks include a separate UTC `logged_at:` line. Image API logs use one JSON object per line with top-level `logged_at`, `event`, and `data` fields. Both formats redact image payloads:
 
 ```text
 <uuid>-<human-readable-name>.<ext>.log
@@ -153,6 +153,13 @@ The start metadata uses this shape before the existing redacted request payload:
     "model": "gpt-5.5"
   }
 }
+```
+
+For Image API runs, the start and response are separate JSONL records. The response record never replaces or expands the start record:
+
+```jsonl
+{"logged_at":"2026-07-12T00:00:00Z","event":"codex_image_gen.start","data":{"request":{"model":"gpt-image-2"}}}
+{"logged_at":"2026-07-12T00:00:01Z","event":"image_api.response","data":{"status":"completed","response":{"data":[{"b64_json":"<redacted 12345 chars>"}]}}}
 ```
 
 Examples:
@@ -204,7 +211,7 @@ Validation notes:
 - `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the selected model and server defaults apply. The default Responses model `gpt-5.5` supports `none`, `low`, `medium` (default), `high`, and `xhigh`; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.
-- The CLI writes `<final-path>.log` next to the Codex-home original. Logs start with endpoint, transport, output path, invocation, ordered input paths, and request metadata, and each event timestamp is stored as log metadata. CLI info, debug, and error messages are logged as metadata. Image API logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
+- The CLI writes `<final-path>.log` next to the Codex-home original. Every log write appends a new record; response and failure handling never rewrites the start record or any earlier event. Logs start with endpoint, transport, output path, invocation, ordered input paths, and request metadata, and each event timestamp is stored as log metadata. CLI info, debug, and error messages are appended as separate events. Image API JSONL logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
 
 ## CLI examples
 

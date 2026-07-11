@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 import mimetypes
 import os
@@ -56,7 +56,7 @@ GPT_IMAGE_2_MIN_PIXELS = 655_360
 GPT_IMAGE_2_MAX_PIXELS = 8_294_400
 GPT_IMAGE_2_MAX_EDGE = 3840
 GPT_IMAGE_2_MAX_RATIO = 3.0
-CLI_LOG_FORMATS = {"responses-event", "image-json", "image-jsonl"}
+CLI_LOG_FORMATS = {"responses-event", "image-jsonl"}
 
 
 @dataclass
@@ -152,7 +152,6 @@ class RequestConfig:
 class LogContext:
     path: Path | None = None
     format: str | None = None
-    messages: list[dict[str, str]] = field(default_factory=list)
     active_handle: Any = None
 
 
@@ -224,13 +223,6 @@ class Redaction:
         if isinstance(value, list):
             return [Redaction.to_plain_data(item) for item in value]
         return value
-
-    @staticmethod
-    def log_record_with_timestamp(value: Any) -> Any:
-        plain = Redaction.to_plain_data(value)
-        if isinstance(plain, dict):
-            return {**plain, "logged_at": Logging.utc_timestamp()}
-        return {"value": plain, "logged_at": Logging.utc_timestamp()}
 
     @staticmethod
     def looks_like_image_base64(value: Any) -> bool:
@@ -394,23 +386,23 @@ class Logging:
         log_handle.write("data: " + json.dumps(redacted, ensure_ascii=False) + "\n\n")
 
     @staticmethod
-    def write_image_api_stream_log_item(log_handle: Any, item: Any) -> None:
-        redacted = Redaction.image_api_log(Redaction.log_record_with_timestamp(item))
-        log_handle.write(json.dumps(redacted, ensure_ascii=False) + "\n")
+    def write_image_api_log_event(log_handle: Any, event_type: str, data: Any) -> None:
+        record = {
+            "logged_at": Logging.utc_timestamp(),
+            "event": event_type,
+            "data": Redaction.image_api_log(Redaction.to_plain_data(data)),
+        }
+        log_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def configure(
         self,
         log_path: Path | None,
         log_format: str | None,
-        *,
-        reset_messages: bool = False,
     ) -> None:
         if log_format is not None and log_format not in CLI_LOG_FORMATS:
             raise ValueError(f"Unknown CLI log format: {log_format}")
         self.context.path = log_path
         self.context.format = log_format
-        if reset_messages:
-            self.context.messages = []
 
     def set_active_handle(self, log_handle: Any) -> None:
         self.context.active_handle = log_handle
@@ -429,31 +421,7 @@ class Logging:
         if verbose:
             print(message)
 
-    def cli_log_message_record(self, level: str, message: str) -> dict[str, str]:
-        return {
-            "logged_at": self.utc_timestamp(),
-            "level": level,
-            "message": message,
-        }
-
-    def append_image_json_cli_message(self, log_path: Path, record: dict[str, str]) -> None:
-        try:
-            current = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else {}
-        except Exception:
-            current = {}
-        if not isinstance(current, dict):
-            current = {}
-        messages = current.get("messages")
-        if not isinstance(messages, list):
-            messages = []
-        messages.append(Redaction.image_api_log(record))
-        current["messages"] = messages
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
     def log_cli_message(self, level: str, message: str) -> None:
-        record = self.cli_log_message_record(level, message)
-        self.context.messages.append(record)
         if not self.context.path or not self.context.format:
             return
         try:
@@ -475,19 +443,19 @@ class Logging:
                         )
             elif self.context.format == "image-jsonl":
                 if self.context.active_handle is not None:
-                    self.write_image_api_stream_log_item(
+                    self.write_image_api_log_event(
                         self.context.active_handle,
-                        {"log": {"level": level, "message": message}},
+                        f"codex_image_gen.{level}",
+                        {"level": level, "message": message},
                     )
                     self.context.active_handle.flush()
                 else:
                     with self.context.path.open("a", encoding="utf-8") as log_handle:
-                        self.write_image_api_stream_log_item(
+                        self.write_image_api_log_event(
                             log_handle,
-                            {"log": {"level": level, "message": message}},
+                            f"codex_image_gen.{level}",
+                            {"level": level, "message": message},
                         )
-            elif self.context.format == "image-json":
-                self.append_image_json_cli_message(self.context.path, record)
         except Exception:
             return
 
@@ -534,56 +502,27 @@ class Logging:
         with log_path.open("a", encoding="utf-8") as log_handle:
             self.write_responses_log_event(log_handle, event_type, details)
 
-    def image_api_log_record(
-        self,
-        payload: dict[str, Any],
-        response: Any,
-        *,
-        start_info: dict[str, Any] | None = None,
-        status: str | None = None,
-    ) -> dict[str, Any]:
-        record: dict[str, Any] = {"logged_at": self.utc_timestamp()}
-        if start_info is not None:
-            record["start"] = Redaction.image_api_log(start_info)
-        if status is not None:
-            record["status"] = status
-        record["request"] = Redaction.image_api_log(payload)
-        record["response"] = Redaction.image_api_log(response)
-        if self.context.messages:
-            record["messages"] = Redaction.image_api_log(self.context.messages)
-        return record
-
-    def write_image_api_log(
+    def append_image_api_log_event(
         self,
         log_path: Path,
-        payload: dict[str, Any],
-        response: Any,
-        *,
-        start_info: dict[str, Any] | None = None,
-        status: str | None = None,
+        event_type: str,
+        data: Any,
     ) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            json.dumps(
-                self.image_api_log_record(
-                    payload,
-                    response,
-                    start_info=start_info,
-                    status=status,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        with log_path.open("a", encoding="utf-8") as log_handle:
+            self.write_image_api_log_event(log_handle, event_type, data)
+
+    def write_image_api_response_log(self, log_path: Path, response: Any, *, status: str) -> None:
+        self.append_image_api_log_event(
+            log_path,
+            "image_api.response",
+            {"status": status, "response": response},
         )
 
     def write_image_api_failure_log(
         self,
         log_path: Path,
-        payload: dict[str, Any],
         *,
-        start_info: dict[str, Any] | None = None,
         status_code: int | None = None,
         response_text: str | None = None,
         error_message: str | None = None,
@@ -595,21 +534,15 @@ class Logging:
             response["text"] = response_text[:4000]
         if error_message is not None:
             response["error"] = error_message
-        self.write_image_api_log(log_path, payload, response, start_info=start_info, status="failed")
+        self.write_image_api_response_log(log_path, response, status="failed")
         return response
 
     def write_image_api_start_log(
         self,
         log_path: Path,
-        payload: dict[str, Any],
         start_info: dict[str, Any],
     ) -> None:
-        self.write_image_api_log(log_path, payload, None, start_info=start_info, status="started")
-
-    def write_image_api_stream_start_log(self, log_path: Path, start_info: dict[str, Any]) -> None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("w", encoding="utf-8") as log_handle:
-            self.write_image_api_stream_log_item(log_handle, {"start": start_info})
+        self.append_image_api_log_event(log_path, "codex_image_gen.start", start_info)
 
 
 class Paths:
@@ -1021,7 +954,7 @@ class ResponsesTransport:
     ) -> tuple[bytes, bool]:
         if run.log_path:
             run.log_path.parent.mkdir(parents=True, exist_ok=True)
-            with run.log_path.open("w", encoding="utf-8") as log_handle:
+            with run.log_path.open("a", encoding="utf-8") as log_handle:
                 self.logger.write_responses_log_event(
                     log_handle,
                     "codex_image_gen.start",
@@ -1167,7 +1100,7 @@ class ResponsesTransport:
         stream = None
         if run.log_path:
             run.log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_handle = run.log_path.open("w", encoding="utf-8")
+            log_handle = run.log_path.open("a", encoding="utf-8")
             self.logger.set_active_handle(log_handle)
             self.logger.write_responses_log_event(
                 log_handle,
@@ -1296,7 +1229,6 @@ class ImageApiTransport:
         self,
         payload: dict[str, Any],
         run: RunContext,
-        start_info: dict[str, Any],
         config: RequestConfig,
     ) -> bytes:
         if payload.get("stream"):
@@ -1320,8 +1252,6 @@ class ImageApiTransport:
             if response.status_code >= 400:
                 failure = self.logger.write_image_api_failure_log(
                     run.log_path,
-                    payload,
-                    start_info=start_info,
                     status_code=response.status_code,
                     response_text=response.text,
                 )
@@ -1339,8 +1269,6 @@ class ImageApiTransport:
             except Exception as exc:
                 failure = self.logger.write_image_api_failure_log(
                     run.log_path,
-                    payload,
-                    start_info=start_info,
                     status_code=response.status_code,
                     response_text=response.text,
                     error_message=f"Could not parse JSON response: {exc}",
@@ -1353,12 +1281,10 @@ class ImageApiTransport:
                         show_response_details=config.show_response_details,
                     )
                 )
-            self.logger.write_image_api_log(run.log_path, payload, data, start_info=start_info, status="completed")
+            self.logger.write_image_api_response_log(run.log_path, data, status="completed")
         except Exception as exc:
             failure = self.logger.write_image_api_failure_log(
                 run.log_path,
-                payload,
-                start_info=start_info,
                 error_message=str(exc),
             )
             self.logger.die(
@@ -1380,7 +1306,6 @@ class ImageApiTransport:
         self,
         stream: Any,
         run: RunContext,
-        request_options: dict[str, Any],
         config: RequestConfig,
     ) -> bytes:
         partial_count = 0
@@ -1389,11 +1314,10 @@ class ImageApiTransport:
         with run.log_path.open("a", encoding="utf-8") as log_handle:
             self.logger.set_active_handle(log_handle)
             try:
-                self.logger.write_image_api_stream_log_item(log_handle, {"request": request_options})
                 for event in stream:
                     item = Redaction.to_plain_data(event)
                     last_item = item
-                    self.logger.write_image_api_stream_log_item(log_handle, {"event": item})
+                    self.logger.write_image_api_log_event(log_handle, "image_api.response_event", item)
                     if config.save_partials and isinstance(item, dict):
                         partial_b64 = item.get("partial_image_b64")
                         if not partial_b64:
@@ -1422,7 +1346,6 @@ class ImageApiTransport:
         self,
         response: Any,
         run: RunContext,
-        request_options: dict[str, Any],
         config: RequestConfig,
     ) -> bytes:
         partial_count = 0
@@ -1431,7 +1354,6 @@ class ImageApiTransport:
         log_handle = run.log_path.open("a", encoding="utf-8")
         self.logger.set_active_handle(log_handle)
         try:
-            self.logger.write_image_api_stream_log_item(log_handle, {"request": request_options})
             for raw in response:
                 line = raw.decode("utf-8", "ignore").rstrip("\n")
                 if not line.startswith("data:"):
@@ -1444,7 +1366,7 @@ class ImageApiTransport:
                 except json.JSONDecodeError:
                     continue
                 last_item = item
-                self.logger.write_image_api_stream_log_item(log_handle, {"event": item})
+                self.logger.write_image_api_log_event(log_handle, "image_api.response_event", item)
                 if config.save_partials:
                     partial_b64 = item.get("partial_image_b64") if isinstance(item, dict) else None
                     if not partial_b64 and isinstance(item, dict):
@@ -1484,8 +1406,8 @@ class ImageApiTransport:
                 timeout_seconds=run.timeout_seconds,
                 client="httpx-json",
             )
-            self.logger.write_image_api_start_log(run.log_path, payload, start_info)
-            return self.request_edit(payload, run, start_info, config)
+            self.logger.write_image_api_start_log(run.log_path, start_info)
+            return self.request_edit(payload, run, config)
 
         client = CodexClient.create_openai(run.token, run.account_id, run.timeout_seconds, self.logger)
         options = Payloads.build_image_api_options(config, prompt)
@@ -1499,19 +1421,13 @@ class ImageApiTransport:
             timeout_seconds=run.timeout_seconds,
             client="openai-sdk",
         )
-        if options.get("stream"):
-            self.logger.configure(run.log_path, "image-jsonl")
-            self.logger.write_image_api_stream_start_log(run.log_path, start_info)
-        else:
-            self.logger.configure(run.log_path, "image-json")
-            self.logger.write_image_api_start_log(run.log_path, options, start_info)
+        self.logger.configure(run.log_path, "image-jsonl")
+        self.logger.write_image_api_start_log(run.log_path, start_info)
         try:
             response = client.images.generate(**options, timeout=run.timeout_seconds)
         except Exception as exc:
             failure = self.logger.write_image_api_failure_log(
                 run.log_path,
-                options,
-                start_info=start_info,
                 error_message=str(exc),
             )
             self.logger.die(
@@ -1524,8 +1440,8 @@ class ImageApiTransport:
             )
 
         if options.get("stream"):
-            return self.stream_response(response, run, options, config)
-        self.logger.write_image_api_log(run.log_path, options, response, start_info=start_info, status="completed")
+            return self.stream_response(response, run, config)
+        self.logger.write_image_api_response_log(run.log_path, response, status="completed")
         return Output.image_response_bytes(
             response,
             logger=self.logger,
@@ -1646,9 +1562,9 @@ class Cli:
     def execute(self, config: RequestConfig, prompt: str, out_path: Path, argv: list[str]) -> int:
         log_path = Paths.log_path(out_path)
         if config.uses_responses_transport:
-            self.logger.configure(log_path, "responses-event", reset_messages=True)
+            self.logger.configure(log_path, "responses-event")
         else:
-            self.logger.configure(log_path, "image-json", reset_messages=True)
+            self.logger.configure(log_path, "image-jsonl")
         invocation, inputs = ExecutionMetadata.build(argv, config)
         token, account_id = Paths.read_codex_auth(config.auth_json, self.logger)
         run = RunContext(
