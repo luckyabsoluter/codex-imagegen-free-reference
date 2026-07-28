@@ -33,7 +33,6 @@ CODEX_IMAGE_GENERATIONS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/generations"
 CODEX_IMAGE_EDITS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/edits"
 CODEX_RESPONSES_URL = f"{CODEX_IMAGE_API_BASE_URL}/responses"
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
-DEFAULT_RESPONSES_MODEL = "gpt-5.5"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
@@ -122,10 +121,6 @@ class RequestConfig:
     @property
     def effective_image_model(self) -> str:
         return self.image_model or self.model or DEFAULT_IMAGE_MODEL
-
-    @property
-    def effective_responses_model(self) -> str:
-        return self.model or DEFAULT_RESPONSES_MODEL
 
     @property
     def timeout_seconds(self) -> float:
@@ -640,6 +635,59 @@ class Paths:
         return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+class CodexModels:
+    @staticmethod
+    def cache_path(auth_json: str | None) -> Path:
+        return Paths.output_root(auth_json) / "models_cache.json"
+    
+    @staticmethod
+    def priority(entry: dict[str, Any], index: int) -> tuple[int, int]:
+        value = entry.get("priority")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value, index
+        return sys.maxsize, index
+    
+    @classmethod
+    def resolve(cls, requested_model: str | None, auth_json: str | None, logger: Logging) -> str:
+        if requested_model:
+            return requested_model
+        
+        cache_path = cls.cache_path(auth_json)
+        if not cache_path.exists():
+            logger.die(
+                f"Codex model cache not found: {cache_path}. "
+                "Pass --model or run Codex to refresh its model catalog."
+            )
+        try:
+            catalog = json.loads(cache_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.die(
+                f"Could not parse Codex model cache {cache_path}: {exc}. "
+                "Pass --model or run Codex to refresh its model catalog."
+            )
+        
+        models = catalog.get("models") if isinstance(catalog, dict) else None
+        candidates: list[tuple[int, int, str]] = []
+        if isinstance(models, list):
+            for index, entry in enumerate(models):
+                if not isinstance(entry, dict):
+                    continue
+                slug = entry.get("slug")
+                visibility = entry.get("visibility")
+                if not isinstance(slug, str) or not slug.strip():
+                    continue
+                if visibility not in (None, "list"):
+                    continue
+                priority, fallback_order = cls.priority(entry, index)
+                candidates.append((priority, fallback_order, slug.strip()))
+        if not candidates:
+            logger.die(
+                f"Codex model cache does not contain an available model: {cache_path}. "
+                "Pass --model or run Codex to refresh its model catalog."
+            )
+        return min(candidates)[2]
+
+
 class Validation:
     @staticmethod
     def parse_size(size: str) -> tuple[int, int] | None:
@@ -772,7 +820,7 @@ class Payloads:
         content.append({"type": "input_text", "text": prompt})
 
         payload: dict[str, Any] = {
-            "model": config.effective_responses_model,
+            "model": CodexModels.resolve(config.model, config.auth_json, logger),
             "instructions": config.instructions or "",
             "input": [{"role": "user", "content": content}],
             "tools": [Payloads.build_image_tool(config, logger)],
@@ -1477,14 +1525,19 @@ class Cli:
                 "or /images/edits."
             ),
         )
-        parser.add_argument("--model", help="Model for the selected transport.")
+        parser.add_argument(
+            "--model",
+            help=(
+                "Model for the selected transport. Responses resolves the current Codex "
+                "model cache when omitted; image-api defaults to gpt-image-2."
+            ),
+        )
         parser.add_argument(
             "--reasoning-effort",
             help=(
                 "Optional Responses reasoning.effort value. Omit this option to use the "
-                "model/server default. The default Responses model gpt-5.5 supports "
-                "none, low, medium (default), high, and xhigh; other models can differ, "
-                "and additional values may be supported. See "
+                "resolved model/server default. Supported values depend on the model and "
+                "additional values may become available. See "
                 "https://developers.openai.com/api/docs/guides/reasoning."
             ),
         )

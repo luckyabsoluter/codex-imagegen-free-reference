@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import unittest
@@ -72,6 +73,66 @@ class ExecutionMetadataTests(unittest.TestCase):
         )
 
 
+class CodexModelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.logger = image_gen.Logging()
+        self.root = ROOT / f"codex-model-resolution-{uuid.uuid4()}.test"
+        self.root.mkdir()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+    
+    def write_cache(self, models: list[object]) -> None:
+        (self.root / "models_cache.json").write_text(
+            json.dumps({"models": models}),
+            encoding="utf-8",
+        )
+    
+    def test_explicit_model_does_not_read_codex_cache(self) -> None:
+        with mock.patch.object(image_gen.Paths, "output_root", side_effect=AssertionError("cache read")):
+            model = image_gen.CodexModels.resolve("gpt-explicit", None, self.logger)
+        
+        self.assertEqual(model, "gpt-explicit")
+    
+    def test_omitted_model_uses_highest_priority_visible_cache_entry(self) -> None:
+        self.write_cache(
+            [
+                {"slug": "gpt-hidden", "priority": 0, "visibility": "hide"},
+                {"slug": "gpt-secondary", "priority": 2, "visibility": "list"},
+                {"slug": "gpt-primary", "priority": 1, "visibility": "list"},
+            ]
+        )
+        
+        with mock.patch.object(image_gen.Paths, "output_root", return_value=self.root):
+            model = image_gen.CodexModels.resolve(None, None, self.logger)
+        
+        self.assertEqual(model, "gpt-primary")
+    
+    def test_omitted_model_requires_cache_or_explicit_override(self) -> None:
+        stderr = StringIO()
+        with (
+            mock.patch.object(image_gen.Paths, "output_root", return_value=self.root),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            image_gen.CodexModels.resolve(None, None, self.logger)
+        
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("Pass --model", stderr.getvalue())
+
+
+class ResponsesPayloadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.logger = image_gen.Logging()
+    
+    def test_omitted_model_is_resolved_before_building_request(self) -> None:
+        config = image_gen.Cli(self.logger).parse_config(["--prompt", "A test"])
+        with mock.patch.object(image_gen.CodexModels, "resolve", return_value="gpt-cached") as resolve:
+            payload = image_gen.Payloads.build_responses_payload(config, "A test", self.logger)
+        
+        self.assertEqual(payload["model"], "gpt-cached")
+        self.assertNotIn("reasoning", payload)
+        resolve.assert_called_once_with(None, None, self.logger)
+
+
 class StartLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.logger = image_gen.Logging()
@@ -82,7 +143,7 @@ class StartLogTests(unittest.TestCase):
         }
         self.payload = {
             "input": [{"content": [{"type": "input_image", "image_url": "data:image/png;base64,secret"}]}],
-            "model": "gpt-5.5",
+            "model": "test-model",
         }
 
     def start_info(self, transport: str) -> dict[str, object]:
@@ -112,7 +173,7 @@ class StartLogTests(unittest.TestCase):
 
         self.assertEqual(record["invocation"], self.invocation)
         self.assertEqual(record["inputs"], self.inputs)
-        self.assertEqual(record["request"]["model"], "gpt-5.5")
+        self.assertEqual(record["request"]["model"], "test-model")
         self.assertTrue(record["request"]["input"][0]["content"][0]["image_url"].startswith("<redacted "))
         self.assertNotIn("access_token", json.dumps(record))
 
@@ -124,7 +185,7 @@ class StartLogTests(unittest.TestCase):
         self.assertEqual(record["event"], "codex_image_gen.start")
         self.assertEqual(record["data"]["invocation"], self.invocation)
         self.assertEqual(record["data"]["inputs"], self.inputs)
-        self.assertEqual(record["data"]["request"]["model"], "gpt-5.5")
+        self.assertEqual(record["data"]["request"]["model"], "test-model")
         self.assertTrue(record["data"]["request"]["input"][0]["content"][0]["image_url"].startswith("<redacted "))
         self.assertNotIn("access_token", json.dumps(record))
 
@@ -162,6 +223,7 @@ class CliTests(unittest.TestCase):
 
         with (
             mock.patch.object(image_gen.Paths, "output_path", return_value=Path("generated.png")),
+            mock.patch.object(image_gen.CodexModels, "resolve", return_value="gpt-cached"),
             redirect_stdout(stdout),
         ):
             result = cli.main(argv)
@@ -170,6 +232,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(preview["transport"], "responses")
         self.assertEqual(preview["output"], "generated.png")
+        self.assertEqual(preview["model"], "gpt-cached")
 
     def test_main_preserves_explicit_argv_before_parsing(self) -> None:
         argv = ["--prompt", "A dry test", "--name", "dry-test"]
