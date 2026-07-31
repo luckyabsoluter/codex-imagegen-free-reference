@@ -14,10 +14,13 @@ It uses the same hosted-tool shape used by Codex itself: `ToolSpec::ImageGenerat
 
 ```json
 {
+  "model": "gpt-5.6-sol",
   "stream": true,
   "tools": [{ "type": "image_generation", "output_format": "png" }]
 }
 ```
+
+The model shown is the current documented Codex default and is illustrative, not pinned by this project. If `--model` is omitted, the CLI resolves the visible model with the highest cache priority from the selected Codex home's `models_cache.json` and sends it explicitly because the ChatGPT-account endpoint rejects model-less requests.
 
 The Codex Image API namespace remains available when explicitly requested with `--transport image-api`. Prompt-only generation goes to:
 
@@ -76,6 +79,7 @@ Important observations:
 - With `--transport image-api`, local reference images are attached to the edit endpoint as JSON `image_url` objects.
 - Direct mode supports local mask images. The first `--reference` is the edit target when a mask is used.
 - This path uses Codex auth automatically. If `--auth-json /path/to/auth.json` is provided, that exact auth file is used. Otherwise it checks `$CODEX_HOME/auth.json` first, then `~/.codex/auth.json`.
+- Omitted Responses `--model` values are resolved from `models_cache.json` beside the selected Codex auth/output root. If that cache is missing or has no visible model, pass `--model` explicitly or run Codex to refresh its model catalog.
 - If none of those auth files is available, the CLI exits with a configuration error. It does not require `OPENAI_API_KEY`.
 
 ## Why this path is recommended here
@@ -150,7 +154,7 @@ The start metadata uses this shape before the existing redacted request payload:
     "mask": null
   },
   "request": {
-    "model": "gpt-5.5"
+    "model": "gpt-5.6-sol"
   }
 }
 ```
@@ -183,7 +187,7 @@ Use `--copy-to` for this. Do not make the Codex home output directory the projec
 
 The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 
-- `--model <gpt-image-model>`
+- `--model <model>`, an explicit Responses or Image API model override
 - `--quality low|medium|high|auto`
 - `--size auto|WIDTHxHEIGHT`
 - `--output-format png|webp|jpeg`
@@ -201,6 +205,7 @@ The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 - `--verbose`, printing debug details
 
 Validation notes:
+- For Responses, omitting `--model` selects the visible entry with the highest cache priority from the selected Codex home's `models_cache.json`. The resolved model is always included in the request. The CLI does not silently fall back to a compiled-in model if the cache is unavailable.
 - The CLI accepts `auto` or `WIDTHxHEIGHT` for `--size` by default and lets the server decide model-specific support.
 - When `--image-model` starts with `gpt-image-2`, the CLI also enforces the documented `gpt-image-2` hard constraints: max edge `<= 3840px`, both edges multiples of `16px`, long-to-short ratio `<= 3:1`, and total pixels between `655,360` and `8,294,400`.
 - For other explicit image models, the CLI performs local syntax validation only.
@@ -208,7 +213,7 @@ Validation notes:
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. Partial image previews are not completed images and must not be used as final artifacts. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
 - `--timeout` applies to the raw Responses fallback, SDK Responses calls, Image API generation, and Image API edit requests.
-- `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the selected model and server defaults apply. The default Responses model `gpt-5.5` supports `none`, `low`, `medium` (default), `high`, and `xhigh`; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
+- `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the resolved model and server defaults apply. Codex's documented default Power setting is currently `gpt-5.6-sol` with medium reasoning. GPT-5.6 Sol supports `none`, `low`, `medium`, `high`, `xhigh`, and `max` through the API; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.
 - The CLI writes `<final-path>.log` next to the Codex-home original. Every log write appends a new record; response and failure handling never rewrites the start record or any earlier event. Logs start with endpoint, transport, output path, invocation, ordered input paths, and request metadata, and each event timestamp is stored as log metadata. CLI info, debug, and error messages are appended as separate events. Image API JSONL logs redact base64 image payloads; Responses logs keep event structure while redacting image payloads.
@@ -313,7 +318,7 @@ python scripts/codex_image_gen.py \
   --copy-to output/imagegen/architecture-preview.png
 ```
 
-Dry-run without network or auth validation:
+Dry-run without network or auth validation (it still reads the selected Codex model cache unless `--model` is provided):
 
 ```bash
 python scripts/codex_image_gen.py \
