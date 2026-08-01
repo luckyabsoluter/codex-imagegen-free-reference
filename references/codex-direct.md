@@ -103,11 +103,13 @@ scripts/codex_image_gen.py
 
 ## Output policy
 
-The Codex API direct CLI saves generated originals under the selected Codex home:
+The Codex API direct CLI saves generated originals under a directory named for the machine's local date:
 
 ```text
-<selected-codex-home>/generated_images_free_reference/
+<selected-codex-home>/generated_images_free_reference/<YYYY-MM-DD>/
 ```
+
+If the date directory cannot be created, including when that path is occupied by a file, the CLI falls back to `<selected-codex-home>/generated_images_free_reference/`.
 
 Selection order:
 
@@ -177,7 +179,7 @@ Examples:
 Project-local placement should be done by copying the generated original:
 
 ```text
-$CODEX_HOME/generated_images_free_reference/<uuid>-<name>.png
+$CODEX_HOME/generated_images_free_reference/<YYYY-MM-DD>/<uuid>-<name>.png
 → ./output/imagegen/<name>.png
 ```
 

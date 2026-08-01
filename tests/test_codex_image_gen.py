@@ -73,6 +73,62 @@ class ExecutionMetadataTests(unittest.TestCase):
         )
 
 
+class OutputPathTests(unittest.TestCase):
+    DATE_FOLDER = "2026-08-10"
+    
+    def setUp(self) -> None:
+        self.root = ROOT / f"codex-output-path-{uuid.uuid4()}.test"
+        self.root.mkdir()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+    
+    def patch_date(self) -> None:
+        date_patch = mock.patch.object(image_gen, "date")
+        mocked_date = date_patch.start()
+        mocked_date.today.return_value.isoformat.return_value = self.DATE_FOLDER
+        self.addCleanup(date_patch.stop)
+    
+    def test_output_path_uses_local_date_directory(self) -> None:
+        self.patch_date()
+        with mock.patch.object(image_gen.Paths, "output_root", return_value=self.root):
+            output_path = image_gen.Paths.output_path("Dated image", "png", None)
+        
+        expected_dir = self.root / "generated_images_free_reference" / self.DATE_FOLDER
+        self.assertEqual(output_path.parent, expected_dir)
+        self.assertTrue(expected_dir.is_dir())
+        self.assertEqual(image_gen.Paths.log_path(output_path).parent, expected_dir)
+        self.assertEqual(image_gen.Output.partial_output_path(output_path, 1).parent, expected_dir)
+    
+    def test_output_directory_falls_back_when_date_path_is_a_file(self) -> None:
+        self.patch_date()
+        base_output_dir = self.root / "generated_images_free_reference"
+        base_output_dir.mkdir()
+        (base_output_dir / self.DATE_FOLDER).write_text("occupied", encoding="utf-8")
+        
+        with mock.patch.object(image_gen.Paths, "output_root", return_value=self.root):
+            output_dir = image_gen.Paths.output_dir(None)
+        
+        self.assertEqual(output_dir, base_output_dir)
+    
+    def test_output_directory_falls_back_when_date_directory_creation_fails(self) -> None:
+        self.patch_date()
+        base_output_dir = self.root / "generated_images_free_reference"
+        dated_output_dir = base_output_dir / self.DATE_FOLDER
+        original_mkdir = Path.mkdir
+        
+        def mkdir(path: Path, *args: object, **kwargs: object) -> None:
+            if path == dated_output_dir:
+                raise PermissionError("date directory is unavailable")
+            original_mkdir(path, *args, **kwargs)
+        
+        with (
+            mock.patch.object(image_gen.Paths, "output_root", return_value=self.root),
+            mock.patch.object(Path, "mkdir", autospec=True, side_effect=mkdir),
+        ):
+            output_dir = image_gen.Paths.output_dir(None)
+        
+        self.assertEqual(output_dir, base_output_dir)
+
+
 class CodexModelTests(unittest.TestCase):
     def setUp(self) -> None:
         self.logger = image_gen.Logging()

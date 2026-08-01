@@ -9,7 +9,7 @@ This project is an extension of the built-in `imagegen` skill in Codex. It intro
 - **Transport Selection:** This tool allows you to select the request path—either Codex Responses hosted `image_generation` or the Codex Image API generation/edit route—using the `--transport` flag. In contrast, the built-in tool is restricted to the Responses hosted-tool flow.
 - **Model and Reasoning Selection:** This tool allows you to customize the Responses model, image-generation model, and `reasoning.effort` using `--model`, `--image-model`, and `--reasoning-effort`. When `--model` is omitted for Responses, the direct CLI follows the selected Codex home's current model cache instead of pinning a model in this project. Codex's documented default Power setting is currently `gpt-5.6-sol` with medium reasoning, and it is subject to change.
 
-> **Note:** Direct-mode original images and append-only redacted request/response logs are stored under `~/.codex/generated_images_free_reference/`. Outputs are copied from this directory to your project, which means saved project assets are intentionally duplicated.
+> **Note:** Direct-mode original images and append-only redacted request/response logs are stored under local-date directories at `~/.codex/generated_images_free_reference/<YYYY-MM-DD>/`. If a date directory cannot be created, the files are stored directly under `~/.codex/generated_images_free_reference/`. Outputs are copied from this directory tree to your project, which means saved project assets are intentionally duplicated.
 
 ## Install
 

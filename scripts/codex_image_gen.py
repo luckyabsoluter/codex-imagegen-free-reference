@@ -5,7 +5,8 @@ This CLI calls the Codex Responses hosted-tool route through the OpenAI SDK by
 default using the local Codex auth snapshot in `~/.codex/auth.json`. The Codex
 Image API generation and edit endpoints remain available through
 `--transport image-api`. Generated images are saved under
-`~/.codex/generated_images_free_reference/` by default.
+`~/.codex/generated_images_free_reference/<YYYY-MM-DD>/` by default. If the
+local-date directory cannot be created, the undated parent directory is used.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import base64
 from dataclasses import dataclass
+from datetime import date
 import json
 import mimetypes
 import os
@@ -579,9 +581,14 @@ class Paths:
 
     @staticmethod
     def output_dir(auth_json: str | None) -> Path:
-        output_dir = Paths.output_root(auth_json) / "generated_images_free_reference"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return output_dir
+        base_output_dir = Paths.output_root(auth_json) / "generated_images_free_reference"
+        base_output_dir.mkdir(parents=True, exist_ok=True)
+        dated_output_dir = base_output_dir / date.today().isoformat()
+        try:
+            dated_output_dir.mkdir(exist_ok=True)
+        except OSError:
+            return base_output_dir
+        return dated_output_dir
 
     @staticmethod
     def slugify(value: str) -> str:
