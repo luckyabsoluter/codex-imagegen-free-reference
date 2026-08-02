@@ -103,7 +103,7 @@ scripts/codex_image_gen.py
 
 ## Output policy
 
-The Codex API direct CLI saves generated originals under a directory named for the machine's local date:
+The Codex API direct CLI saves generated originals under a date directory. Pass a fixed UTC offset with `--timezone`, or omit it to use the runtime's local date:
 
 ```text
 <selected-codex-home>/generated_images_free_reference/<YYYY-MM-DD>/
@@ -199,6 +199,7 @@ The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 - `--action generate|edit|auto`
 - `--partial-images 0..3`
 - `--timeout <seconds>`, defaulting to `600`
+- `--timezone <offset>`, a fixed UTC offset from `-12:00` through `+14:00` used for the dated output directory; accepted examples are `1:30`, `01:00`, `1`, `+01:00`, and `-01:00`
 - `--reasoning-effort <value>`, added to Responses payloads as `reasoning: { "effort": <value> }` only when provided
 - `--image-model <gpt-image-model>`, mapped to the tool-level `model` field for the default Responses transport and overriding `--model` for `--transport image-api`
 - `--input-fidelity high|low`, for models that allow explicit input-fidelity selection
@@ -215,6 +216,7 @@ Validation notes:
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. Partial image previews are not completed images and must not be used as final artifacts. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
 - `--timeout` applies to the raw Responses fallback, SDK Responses calls, Image API generation, and Image API edit requests.
+- `--timezone` changes only the date used for the output directory. It is a fixed offset and does not resolve regional daylight-saving rules. Decimal-hour notation such as `1.5`, invalid minutes, and values outside `-12:00` through `+14:00` are rejected before output path selection or network access.
 - `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the resolved model and server defaults apply. Codex's documented default Power setting is currently `gpt-5.6-sol` with medium reasoning. GPT-5.6 Sol supports `none`, `low`, `medium`, `high`, `xhigh`, and `max` through the API; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
 - `--verbose` shows debug details; default output still reports generated originals, partial previews, and copy targets.

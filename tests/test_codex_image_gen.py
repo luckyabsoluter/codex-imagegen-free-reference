@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import timedelta
 from io import StringIO
 import json
 import os
@@ -73,6 +74,26 @@ class ExecutionMetadataTests(unittest.TestCase):
         )
 
 
+class TimezoneOffsetTests(unittest.TestCase):
+    def test_supported_timezone_formats(self) -> None:
+        expected_offsets = {
+            "1:30": timedelta(hours=1, minutes=30),
+            "01:00": timedelta(hours=1),
+            "1": timedelta(hours=1),
+            "+01:00": timedelta(hours=1),
+            "-01:00": timedelta(hours=-1),
+        }
+        
+        for value, expected in expected_offsets.items():
+            with self.subTest(value=value):
+                self.assertEqual(image_gen.Paths.parse_timezone_offset(value), expected)
+    
+    def test_invalid_timezone_formats_are_rejected(self) -> None:
+        for value in ("1.5", "1:60", "14:01", "-12:01"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                image_gen.Paths.parse_timezone_offset(value)
+
+
 class OutputPathTests(unittest.TestCase):
     DATE_FOLDER = "2026-08-10"
     
@@ -97,6 +118,21 @@ class OutputPathTests(unittest.TestCase):
         self.assertTrue(expected_dir.is_dir())
         self.assertEqual(image_gen.Paths.log_path(output_path).parent, expected_dir)
         self.assertEqual(image_gen.Output.partial_output_path(output_path, 1).parent, expected_dir)
+    
+    def test_output_path_uses_configured_timezone(self) -> None:
+        with (
+            mock.patch.object(image_gen.Paths, "output_root", return_value=self.root),
+            mock.patch.object(image_gen, "datetime") as mocked_datetime,
+        ):
+            mocked_datetime.now.return_value.date.return_value.isoformat.return_value = self.DATE_FOLDER
+            output_path = image_gen.Paths.output_path("Dated image", "png", None, "1:30")
+        
+        self.assertEqual(
+            output_path.parent,
+            self.root / "generated_images_free_reference" / self.DATE_FOLDER,
+        )
+        selected_timezone = mocked_datetime.now.call_args.args[0]
+        self.assertEqual(selected_timezone.utcoffset(None), timedelta(hours=1, minutes=30))
     
     def test_output_directory_falls_back_when_date_path_is_a_file(self) -> None:
         self.patch_date()
@@ -273,7 +309,7 @@ class StartLogTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def test_dry_run_remains_network_free(self) -> None:
-        argv = ["--prompt", "A dry test", "--dry-run"]
+        argv = ["--prompt", "A dry test", "--timezone", "1:30", "--dry-run"]
         cli = image_gen.Cli()
         stdout = StringIO()
 
@@ -289,6 +325,31 @@ class CliTests(unittest.TestCase):
         self.assertEqual(preview["transport"], "responses")
         self.assertEqual(preview["output"], "generated.png")
         self.assertEqual(preview["model"], "gpt-cached")
+        self.assertEqual(preview["timezone"], "1:30")
+
+    def test_supported_timezone_cli_formats_are_preserved(self) -> None:
+        cli = image_gen.Cli()
+        
+        for value in ("1:30", "01:00", "1", "+01:00", "-01:00"):
+            with self.subTest(value=value):
+                config = cli.parse_config(["--prompt", "A test", "--timezone", value])
+                self.assertEqual(config.timezone, value)
+
+    def test_invalid_timezone_is_rejected_before_output_path_selection(self) -> None:
+        argv = ["--prompt", "A dry test", "--timezone", "1.5", "--dry-run"]
+        cli = image_gen.Cli()
+        stderr = StringIO()
+        
+        with (
+            mock.patch.object(image_gen.Paths, "output_path") as output_path,
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            cli.main(argv)
+        
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("--timezone must be a UTC offset from -12:00 through +14:00", stderr.getvalue())
+        output_path.assert_not_called()
 
     def test_main_preserves_explicit_argv_before_parsing(self) -> None:
         argv = ["--prompt", "A dry test", "--name", "dry-test"]
@@ -303,6 +364,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(execute.call_args.args[3], argv)
         self.assertIsNot(execute.call_args.args[3], argv)
+
+    def test_main_passes_timezone_to_output_path(self) -> None:
+        argv = ["--prompt", "A dry test", "--timezone", "+01:00"]
+        cli = image_gen.Cli()
+        
+        with (
+            mock.patch.object(image_gen.Paths, "output_path", return_value=Path("generated.png")) as output_path,
+            mock.patch.object(cli, "execute", return_value=0),
+        ):
+            result = cli.main(argv)
+        
+        self.assertEqual(result, 0)
+        output_path.assert_called_once_with("A dry test", "png", None, "+01:00")
 
 
 if __name__ == "__main__":

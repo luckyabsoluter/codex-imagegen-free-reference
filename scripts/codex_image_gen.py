@@ -5,8 +5,9 @@ This CLI calls the Codex Responses hosted-tool route through the OpenAI SDK by
 default using the local Codex auth snapshot in `~/.codex/auth.json`. The Codex
 Image API generation and edit endpoints remain available through
 `--transport image-api`. Generated images are saved under
-`~/.codex/generated_images_free_reference/<YYYY-MM-DD>/` by default. If the
-local-date directory cannot be created, the undated parent directory is used.
+`~/.codex/generated_images_free_reference/<YYYY-MM-DD>/` using the configured
+UTC offset or the runtime's local date by default. If the dated directory cannot
+be created, the undated parent directory is used.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import argparse
 import base64
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import json
 import mimetypes
 import os
@@ -81,6 +82,7 @@ class RequestConfig:
     action: str | None
     partial_images: int | None
     timeout: float
+    timezone: str | None
     input_fidelity: str | None
     mask: str | None
     instructions: str | None
@@ -111,6 +113,7 @@ class RequestConfig:
             action=args.action,
             partial_images=args.partial_images,
             timeout=args.timeout,
+            timezone=args.timezone,
             input_fidelity=args.input_fidelity,
             mask=args.mask,
             instructions=args.instructions,
@@ -580,10 +583,33 @@ class Paths:
         return Path.home() / ".codex"
 
     @staticmethod
-    def output_dir(auth_json: str | None) -> Path:
+    def parse_timezone_offset(value: str) -> timedelta:
+        match = re.fullmatch(r"([+-]?)([0-9]{1,2})(?::([0-9]{2}))?", value)
+        if match is None:
+            raise ValueError(value)
+        hours = int(match.group(2))
+        minutes = int(match.group(3) or 0)
+        if minutes >= 60:
+            raise ValueError(value)
+        total_minutes = hours * 60 + minutes
+        if match.group(1) == "-":
+            total_minutes = -total_minutes
+        if total_minutes < -12 * 60 or total_minutes > 14 * 60:
+            raise ValueError(value)
+        return timedelta(minutes=total_minutes)
+
+    @staticmethod
+    def output_date(timezone_offset: str | None) -> date:
+        if timezone_offset is None:
+            return date.today()
+        output_timezone = timezone(Paths.parse_timezone_offset(timezone_offset))
+        return datetime.now(output_timezone).date()
+
+    @staticmethod
+    def output_dir(auth_json: str | None, timezone_offset: str | None = None) -> Path:
         base_output_dir = Paths.output_root(auth_json) / "generated_images_free_reference"
         base_output_dir.mkdir(parents=True, exist_ok=True)
-        dated_output_dir = base_output_dir / date.today().isoformat()
+        dated_output_dir = base_output_dir / Paths.output_date(timezone_offset).isoformat()
         try:
             dated_output_dir.mkdir(exist_ok=True)
         except OSError:
@@ -605,10 +631,15 @@ class Paths:
         return slug[:72] or "image"
 
     @staticmethod
-    def output_path(name: str | None, output_format: str, auth_json: str | None) -> Path:
+    def output_path(
+        name: str | None,
+        output_format: str,
+        auth_json: str | None,
+        timezone_offset: str | None = None,
+    ) -> Path:
         suffix = output_format.lower().lstrip(".") or DEFAULT_OUTPUT_FORMAT
         stem = f"{uuid4()}-{Paths.slugify(name or 'image')}"
-        return Paths.output_dir(auth_json) / f"{stem}.{suffix}"
+        return Paths.output_dir(auth_json, timezone_offset) / f"{stem}.{suffix}"
 
     @staticmethod
     def log_path(final_path: Path) -> Path:
@@ -748,6 +779,18 @@ class Validation:
             logger.die("--size must be auto or WIDTHxHEIGHT, for example 1024x1024.")
 
     @staticmethod
+    def validate_timezone(timezone_offset: str | None, logger: Logging) -> None:
+        if timezone_offset is None:
+            return
+        try:
+            Paths.parse_timezone_offset(timezone_offset)
+        except ValueError:
+            logger.die(
+                "--timezone must be a UTC offset from -12:00 through +14:00 in H or H:MM format; "
+                "examples: 1:30, 01:00, 1, +01:00, -01:00."
+            )
+
+    @staticmethod
     def validate(config: RequestConfig, logger: Logging) -> None:
         Validation.validate_choice(config.action, ALLOWED_ACTIONS, "--action", logger)
         Validation.validate_choice(config.background, ALLOWED_BACKGROUNDS, "--background", logger)
@@ -756,6 +799,7 @@ class Validation:
         Validation.validate_choice(config.output_format, ALLOWED_OUTPUT_FORMATS, "--output-format", logger)
         Validation.validate_choice(config.quality, ALLOWED_QUALITIES, "--quality", logger)
         Validation.validate_choice(config.transport, ALLOWED_TRANSPORTS, "--transport", logger)
+        Validation.validate_timezone(config.timezone, logger)
         image_model = config.effective_image_model if config.transport == "image-api" else config.image_model
         Validation.validate_size(config.size, image_model, logger)
 
@@ -1563,6 +1607,14 @@ class Cli:
             default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
             help=f"Network request timeout in seconds. Defaults to {DEFAULT_REQUEST_TIMEOUT_SECONDS}.",
         )
+        parser.add_argument(
+            "--timezone",
+            help=(
+                "Fixed UTC offset used for the dated output directory. "
+                "Accepted examples: 1:30, 01:00, 1, +01:00, -01:00. "
+                "Defaults to the runtime's local time zone."
+            ),
+        )
         parser.add_argument("--input-fidelity", help="Optional input fidelity for models that allow explicit selection: high or low.")
         parser.add_argument("--mask", help="Optional local mask image for inpainting; requires at least one --reference.")
         parser.add_argument("--instructions")
@@ -1576,8 +1628,25 @@ class Cli:
         parser.add_argument("--dry-run", action="store_true")
         return parser
 
+    @staticmethod
+    def normalize_timezone_argv(argv: list[str]) -> list[str]:
+        normalized = []
+        index = 0
+        while index < len(argv):
+            value = argv[index]
+            if value == "--timezone" and index + 1 < len(argv):
+                timezone_value = argv[index + 1]
+                if timezone_value.startswith("-") and not timezone_value.startswith("--"):
+                    normalized.append(f"--timezone={timezone_value}")
+                    index += 2
+                    continue
+            normalized.append(value)
+            index += 1
+        return normalized
+
     def parse_config(self, argv: list[str] | None = None) -> RequestConfig:
-        args = self.build_parser().parse_args(argv)
+        effective_argv = list(sys.argv[1:] if argv is None else argv)
+        args = self.build_parser().parse_args(self.normalize_timezone_argv(effective_argv))
         return RequestConfig.from_namespace(args)
 
     def read_prompt(self, config: RequestConfig) -> str:
@@ -1606,6 +1675,7 @@ class Cli:
                 "transport": config.transport,
                 "deprecated": config.transport in DEPRECATED_TRANSPORTS,
                 "timeout_seconds": config.timeout_seconds,
+                "timezone": config.timezone,
                 **Redaction.responses_preview(payload),
             }
         options = Payloads.build_image_api_options(config, prompt)
@@ -1616,6 +1686,7 @@ class Cli:
             "output": str(out_path),
             "log": str(Paths.log_path(out_path)),
             "timeout_seconds": config.timeout_seconds,
+            "timezone": config.timezone,
             **Redaction.image_api_preview(config, options),
         }
 
@@ -1663,7 +1734,12 @@ class Cli:
         config = self.parse_config(effective_argv)
         Validation.validate(config, self.logger)
         prompt = self.read_prompt(config)
-        out_path = Paths.output_path(config.name or prompt, config.output_format, config.auth_json)
+        out_path = Paths.output_path(
+            config.name or prompt,
+            config.output_format,
+            config.auth_json,
+            config.timezone,
+        )
 
         if config.dry_run:
             print(json.dumps(self.dry_run_preview(config, prompt, out_path), ensure_ascii=False, indent=2))
