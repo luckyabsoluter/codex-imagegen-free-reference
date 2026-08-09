@@ -123,6 +123,14 @@ File names use:
 <uuid>-<human-readable-name>.<ext>
 ```
 
+Resolve the human-readable name in this order:
+
+1. Explicit `--name`
+2. The filename stem of a file-form `--copy-to`
+3. The prompt
+
+An existing directory passed to `--copy-to` does not provide a filename, so the prompt fallback is used. The copied destination and output extension behavior are otherwise unchanged.
+
 Default log names append `.log` to the generated original name. Logs are append-only: the CLI writes start metadata once, then appends response, failure, and CLI-message events without changing earlier records. Start metadata includes the endpoint, transport, output path, invocation, ordered reference and mask paths, and request payload. The invocation includes the working directory, a platform-quoted equivalent command, and the complete argument array. Each input path includes the supplied value and the absolute path resolved from the invocation working directory. Responses event blocks include a separate UTC `logged_at:` line. Image API logs use one JSON object per line with top-level `logged_at`, `event`, and `data` fields. Both formats redact image payloads:
 
 ```text
@@ -233,7 +241,6 @@ python scripts/codex_image_gen.py \
   --prompt "A clean product packshot on a neutral studio background" \
   --quality high \
   --size 2048x1152 \
-  --name product-packshot \
   --copy-to output/imagegen/product-packshot.png
 ```
 
@@ -244,7 +251,6 @@ python scripts/codex_image_gen.py \
   --prompt "A clean product thumbnail on a neutral studio background" \
   --quality low \
   --size 1024x1024 \
-  --name product-packshot-draft \
   --copy-to output/imagegen/product-packshot-draft.png
 ```
 
@@ -257,7 +263,6 @@ python scripts/codex_image_gen.py \
   --size 2048x1152 \
   --output-format webp \
   --output-compression 82 \
-  --name mug-hero \
   --copy-to output/imagegen/mug-hero.webp
 ```
 
@@ -268,7 +273,6 @@ python scripts/codex_image_gen.py \
   --reference ./references/product-photo.png \
   --prompt "Image A is the product reference. Create a clean studio packshot with soft lighting." \
   --quality high \
-  --name product-packshot-reference \
   --copy-to output/imagegen/product-packshot-reference.png
 ```
 
@@ -279,7 +283,6 @@ python scripts/codex_image_gen.py \
   --reference ./references/product-photo.png \
   --reference ./references/brand-style.png \
   --prompt "Image A is the product reference. Image B is only for visual style and color direction." \
-  --name product-brand-style \
   --copy-to output/imagegen/product-brand-style.png
 ```
 
@@ -293,7 +296,6 @@ python scripts/codex_image_gen.py \
   --action edit \
   --input-fidelity high \
   --prompt "Change only the masked background area to a clean warm studio backdrop. Keep the product unchanged." \
-  --name product-masked-edit \
   --copy-to output/imagegen/product-masked-edit.png
 ```
 
@@ -305,7 +307,6 @@ python scripts/codex_image_gen.py \
   --quality high \
   --size 2048x1152 \
   --partial-images 2 \
-  --name architecture-preview \
   --copy-to output/imagegen/architecture-preview.png
 ```
 
@@ -318,7 +319,6 @@ python scripts/codex_image_gen.py \
   --quality high \
   --size 2048x1152 \
   --partial-images 2 \
-  --name architecture-preview \
   --copy-to output/imagegen/architecture-preview.png
 ```
 

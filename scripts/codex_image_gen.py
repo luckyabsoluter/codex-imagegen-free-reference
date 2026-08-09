@@ -629,7 +629,17 @@ class Paths:
                 last_dash = True
         slug = "".join(keep).strip("-")
         return slug[:72] or "image"
-
+    
+    @staticmethod
+    def resolve_output_name(name: str | None, copy_to: str | None, prompt: str) -> str:
+        if name:
+            return name
+        if copy_to:
+            copy_target = Path(copy_to)
+            if not (copy_target.exists() and copy_target.is_dir()):
+                return copy_target.stem
+        return prompt
+    
     @staticmethod
     def output_path(
         name: str | None,
@@ -1562,8 +1572,14 @@ class Cli:
         parser.add_argument("--prompt")
         parser.add_argument("--prompt-file")
         parser.add_argument("--reference", action="append", default=[], help="Local reference image path; repeat to attach multiple images.")
-        parser.add_argument("--name", help="Human-readable filename suffix used after the UUID.")
-        parser.add_argument("--copy-to", help="Optional project-local file or directory to receive a copied result.")
+        parser.add_argument(
+            "--name",
+            help="Human-readable filename suffix used after the UUID; overrides copy-target and prompt-derived names.",
+        )
+        parser.add_argument(
+            "--copy-to",
+            help="Optional project-local file or directory; a file target names the original when --name is omitted.",
+        )
         parser.add_argument("--force", action="store_true", help="Allow overwriting the --copy-to target.")
         parser.add_argument(
             "--transport",
@@ -1735,7 +1751,7 @@ class Cli:
         Validation.validate(config, self.logger)
         prompt = self.read_prompt(config)
         out_path = Paths.output_path(
-            config.name or prompt,
+            Paths.resolve_output_name(config.name, config.copy_to, prompt),
             config.output_format,
             config.auth_json,
             config.timezone,

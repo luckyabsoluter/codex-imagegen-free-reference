@@ -134,6 +134,37 @@ class OutputPathTests(unittest.TestCase):
         selected_timezone = mocked_datetime.now.call_args.args[0]
         self.assertEqual(selected_timezone.utcoffset(None), timedelta(hours=1, minutes=30))
     
+    def test_output_name_prefers_explicit_name(self) -> None:
+        output_name = image_gen.Paths.resolve_output_name(
+            "explicit-name",
+            "output/copy-target.png",
+            "Prompt fallback",
+        )
+        
+        self.assertEqual(output_name, "explicit-name")
+    
+    def test_output_name_uses_copy_target_stem(self) -> None:
+        output_name = image_gen.Paths.resolve_output_name(
+            None,
+            "output/copy-target.png",
+            "Prompt fallback",
+        )
+        
+        self.assertEqual(output_name, "copy-target")
+    
+    def test_output_name_falls_back_to_prompt_without_file_copy_target(self) -> None:
+        copy_directory = self.root / "copy-output"
+        copy_directory.mkdir()
+        
+        self.assertEqual(
+            image_gen.Paths.resolve_output_name(None, None, "Prompt fallback"),
+            "Prompt fallback",
+        )
+        self.assertEqual(
+            image_gen.Paths.resolve_output_name(None, str(copy_directory), "Prompt fallback"),
+            "Prompt fallback",
+        )
+    
     def test_output_directory_falls_back_when_date_path_is_a_file(self) -> None:
         self.patch_date()
         base_output_dir = self.root / "generated_images_free_reference"
@@ -377,6 +408,19 @@ class CliTests(unittest.TestCase):
         
         self.assertEqual(result, 0)
         output_path.assert_called_once_with("A dry test", "png", None, "+01:00")
+    
+    def test_main_uses_copy_target_stem_when_name_is_omitted(self) -> None:
+        argv = ["--prompt", "A dry test", "--copy-to", "output/copy-target.png"]
+        cli = image_gen.Cli()
+        
+        with (
+            mock.patch.object(image_gen.Paths, "output_path", return_value=Path("generated.png")) as output_path,
+            mock.patch.object(cli, "execute", return_value=0),
+        ):
+            result = cli.main(argv)
+        
+        self.assertEqual(result, 0)
+        output_path.assert_called_once_with("copy-target", "png", None, None)
 
 
 if __name__ == "__main__":
