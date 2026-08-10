@@ -7,6 +7,8 @@ description: "Generate or edit raster images through Codex API direct image gene
 
 Generates or edits images for the current project (for example website assets, game assets, UI mockups, product mockups, wireframes, logo design, photorealistic images, or infographics).
 
+Treat `SKILL_ROOT` throughout these instructions as this skill folder: the directory that contains this `SKILL.md`. Resolve it from the loaded skill location before running commands; do not assume either a `$CODEX_HOME` installation path or a pre-existing `SKILL_ROOT` environment variable.
+
 ## Top-level modes and rules
 
 This skill has exactly three top-level modes:
@@ -59,13 +61,13 @@ Fallback-only docs/resources for CLI mode:
 - `scripts/image_gen.py`
 
 Local post-processing helper:
-- `$CODEX_HOME/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py`: removes a flat chroma-key background from a generated image and writes a PNG/WebP with alpha. Prefer auto-key sampling, soft matte, and despill for antialiased edges.
+- `SKILL_ROOT/scripts/remove_chroma_key.py`: removes a flat chroma-key background from a generated image and writes a PNG/WebP with alpha. Prefer auto-key sampling, soft matte, and despill for antialiased edges.
 
 ## Python environment
-- Use the skill-local virtual environment at `$CODEX_HOME/skills/codex-imagegen-free-reference/.venv` for every Python script in this skill.
+- Use the skill-local virtual environment at `SKILL_ROOT/.venv` for every Python script in this skill.
 - If the environment does not exist, create it first:
   ```bash
-  SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference"
+  SKILL_ROOT="<absolute path to this skill folder>"
   uv venv "$SKILL_ROOT/.venv"
   ```
 - Install packages into that exact environment:
@@ -76,7 +78,7 @@ Local post-processing helper:
   ```bash
   "$SKILL_ROOT/.venv/bin/python" "$SKILL_ROOT/scripts/codex_image_gen.py" ...
   ```
-- On Windows, use `$env:CODEX_HOME\skills\codex-imagegen-free-reference\.venv\Scripts\python.exe`.
+- On Windows PowerShell, set `$SKILL_ROOT` to the resolved absolute path of this skill folder and use `"$SKILL_ROOT\.venv\Scripts\python.exe"`.
 - Do not use bare `python`, `uv run python`, `uv pip install --system`, `uv tool`, a user/system interpreter, a uv-managed interpreter directly, or a project-local virtual environment for this skill.
 
 ## When to use
@@ -133,7 +135,7 @@ Assume the user wants a new image unless they clearly ask to change an existing 
    - If the user's prompt is already specific and detailed, normalize it into a clear spec without adding creative requirements.
    - If the user's prompt is generic, add tasteful augmentation only when it materially improves output quality.
 10. Run the skill-local interpreter for Codex-auth generation/edit, including local references: `"$SKILL_ROOT/.venv/bin/python" "$SKILL_ROOT/scripts/codex_image_gen.py" ...`. On Windows, use the matching `.venv\Scripts\python.exe`.
-11. For transparent-output requests, follow the transparent image guidance below: generate on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the installed `$CODEX_HOME/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
+11. For transparent-output requests, follow the transparent image guidance below: generate on a flat chroma-key background, copy the selected output into the workspace or `tmp/imagegen/`, run the `SKILL_ROOT/scripts/remove_chroma_key.py` helper, and validate the alpha result before using it. If this path looks unsuitable or fails, ask before switching to CLI `gpt-image-1.5`.
 12. Inspect outputs and validate: subject, style, composition, text accuracy, and invariants/avoid items.
 13. Iterate with a single targeted change, then re-check.
 14. For preview-only work, the underlying file may remain at `$CODEX_HOME/generated_images_free_reference/<YYYY-MM-DD>/` or its undated fallback directory.
@@ -152,8 +154,9 @@ Default sequence:
 3. After generation, copy the selected source image from `$CODEX_HOME/generated_images_free_reference/<YYYY-MM-DD>/...` or its undated fallback directory into the workspace or `tmp/imagegen/`.
 4. Run the installed helper path, not a project-relative script path:
    ```bash
-   "${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference/.venv/bin/python" \
-     "${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py" \
+   SKILL_ROOT="<absolute path to this skill folder>"
+   "$SKILL_ROOT/.venv/bin/python" \
+     "$SKILL_ROOT/scripts/remove_chroma_key.py" \
      --input <source> \
      --out <final.png> \
      --auto-key border \
@@ -357,11 +360,11 @@ These conventions apply only to the CLI fallback. They do not describe built-in 
 - Use `--out` or `--out-dir` to control output paths; keep filenames stable and descriptive.
 
 ### Dependencies
-Use only the skill-local virtual environment at `$CODEX_HOME/skills/codex-imagegen-free-reference/.venv`.
+Use only the skill-local virtual environment at `SKILL_ROOT/.venv`.
 
 Create it if needed:
 ```bash
-SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills/codex-imagegen-free-reference"
+SKILL_ROOT="<absolute path to this skill folder>"
 uv venv "$SKILL_ROOT/.venv"
 ```
 
@@ -377,7 +380,7 @@ uv pip install --python "$SKILL_ROOT/.venv/bin/python" pillow
 
 Portability note:
 - If you are using the installed skill outside this repo, still create and use `.venv` inside that installed skill directory.
-- On Windows, pass `$env:CODEX_HOME\skills\codex-imagegen-free-reference\.venv\Scripts\python.exe` to `uv pip install --python`.
+- On Windows PowerShell, set `$SKILL_ROOT` to the resolved absolute path of this skill folder and pass `"$SKILL_ROOT\.venv\Scripts\python.exe"` to `uv pip install --python`.
 
 ### Environment
 - `OPENAI_API_KEY` must be set for live API calls.
@@ -404,4 +407,4 @@ If installation is not possible in this environment, tell the user which depende
 - `references/image-api.md`: fallback-only API/CLI parameter reference.
 - `references/codex-network.md`: fallback-only network/sandbox troubleshooting for CLI mode.
 - `scripts/image_gen.py`: fallback-only CLI implementation. Do not load or use it unless the user explicitly chooses CLI mode or explicitly confirms a transparent request's true CLI transparency fallback.
-- `$CODEX_HOME/skills/codex-imagegen-free-reference/scripts/remove_chroma_key.py`: local post-processing helper for built-in transparent-image requests.
+- `SKILL_ROOT/scripts/remove_chroma_key.py`: local post-processing helper for built-in transparent-image requests.
