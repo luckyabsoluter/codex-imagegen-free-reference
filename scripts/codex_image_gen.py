@@ -620,7 +620,7 @@ class Paths:
     def slugify(value: str) -> str:
         keep = []
         last_dash = False
-        for char in value.lower():
+        for char in value:
             if char.isalnum():
                 keep.append(char)
                 last_dash = False

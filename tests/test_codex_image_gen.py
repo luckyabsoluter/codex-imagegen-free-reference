@@ -119,6 +119,13 @@ class OutputPathTests(unittest.TestCase):
         self.assertEqual(image_gen.Paths.log_path(output_path).parent, expected_dir)
         self.assertEqual(image_gen.Output.partial_output_path(output_path, 1).parent, expected_dir)
     
+    def test_output_path_preserves_name_case(self) -> None:
+        self.patch_date()
+        with mock.patch.object(image_gen.Paths, "output_root", return_value=self.root):
+            output_path = image_gen.Paths.output_path("BrandLogo", "png", None)
+        
+        self.assertTrue(output_path.name.endswith("-BrandLogo.png"))
+    
     def test_output_path_uses_configured_timezone(self) -> None:
         with (
             mock.patch.object(image_gen.Paths, "output_root", return_value=self.root),
