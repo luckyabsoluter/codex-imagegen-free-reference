@@ -28,6 +28,15 @@ Within OpenAI Image API fallback, the CLI exposes three subcommands:
 - `generate-batch`
 
 Rules:
+
+For this rule, “protected generated-image storage tree” means the directory named `generated_images_free_reference` directly under the Codex home selected by this skill’s documented home-resolution rules, whether or not that directory already exists, together with all descendants and filesystem aliases that resolve to that directory or its descendants. The mutation prohibition below applies only to this protected tree. That limited scope neither permits nor prohibits operations on any other path; all other paths remain governed by separate applicable instructions and permissions.
+
+The agent must not directly create, edit, overwrite, append to, delete, move, rename, replace, link to, mount over, or change metadata or permissions of the protected tree or anything within it. The agent must not cause or arrange such a change through another actor, command, tool, script, subprocess, API, or application, whether the change is the action’s purpose or a known or reasonably foreseeable side effect.
+
+The sole exception is executing an existing, unmodified script bundled with this skill and explicitly prescribed by this skill for the current documented workflow. That execution and only the script’s documented runtime side effects in the protected tree are permitted. The exception does not permit the agent to modify or substitute the script, or to select or manipulate its arguments, environment, working directory, redirections, inputs, or invocation context in order to produce changes outside those documented side effects.
+
+This rule neither permits nor prohibits reading, inspecting, enumerating, copying, or disclosing contents of the protected tree. Those operations remain governed by separate applicable instructions and permissions.
+
 - Use `scripts/codex_image_gen.py` by default when Codex auth is available, especially for local reference images and project-bound output paths.
 - Codex API direct mode defaults to `https://chatgpt.com/backend-api/codex/responses` with the hosted Responses `image_generation` tool.
 - Codex API direct mode exposes image controls through `scripts/codex_image_gen.py`: `--model`, `--reasoning-effort`, `--image-model`, `--size`, `--quality`, `--background`, `--output-format`, `--output-compression`, `--moderation`, `--action`, `--partial-images`, `--timeout`, `--timezone`, `--input-fidelity`, `--mask`, and `--hide-response-details`. Use `--transport image-api` only when the Codex Image API generation/edit route is specifically needed.
