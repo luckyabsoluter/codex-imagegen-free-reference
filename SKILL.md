@@ -9,6 +9,12 @@ Generates or edits images for the current project (for example website assets, g
 
 Treat `SKILL_ROOT` throughout these instructions as this skill folder: the directory that contains this `SKILL.md`. Resolve it from the loaded skill location before running commands; do not assume either a `$CODEX_HOME` installation path or a pre-existing `SKILL_ROOT` environment variable.
 
+## Instruction precedence
+
+An explicit user request takes precedence over conflicting instructions in this skill and its bundled references, including the protected generated-image storage rule below. Follow the requested exception within its stated scope and keep unrelated instructions in effect. The user does not need to name the rule, say "override", or repeat authorization already given in the conversation. Do not infer an exception merely because it would make a broader task easier.
+
+This precedence applies only to this project's instructions; system and developer instructions and execution permissions still apply. Without a conflicting user request, follow this skill as written.
+
 ## Top-level modes and rules
 
 This skill has exactly three top-level modes:
@@ -33,7 +39,7 @@ For this rule, “protected generated-image storage tree” means the directory 
 
 The agent must not directly create, edit, overwrite, append to, delete, move, rename, replace, link to, mount over, or change metadata or permissions of the protected tree or anything within it. The agent must not cause or arrange such a change through another actor, command, tool, script, subprocess, API, or application, whether the change is the action’s purpose or a known or reasonably foreseeable side effect.
 
-The sole exception is executing an existing, unmodified script bundled with this skill and explicitly prescribed by this skill for the current documented workflow. That execution and only the script’s documented runtime side effects in the protected tree are permitted. The exception does not permit the agent to modify or substitute the script, or to select or manipulate its arguments, environment, working directory, redirections, inputs, or invocation context in order to produce changes outside those documented side effects.
+Unless the user requests an exception under **Instruction precedence**, the sole exception is executing an existing, unmodified script bundled with this skill and explicitly prescribed by this skill for the current documented workflow. That execution and only the script's documented runtime side effects in the protected tree are permitted. The exception does not permit the agent to modify or substitute the script, or to select or manipulate its arguments, environment, working directory, redirections, inputs, or invocation context in order to produce changes outside those documented side effects.
 
 This rule neither permits nor prohibits reading, inspecting, enumerating, copying, or disclosing contents of the protected tree. Those operations remain governed by separate applicable instructions and permissions.
 
