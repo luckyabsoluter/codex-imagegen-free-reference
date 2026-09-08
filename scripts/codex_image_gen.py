@@ -2,7 +2,8 @@
 """Codex-auth image generation with free local reference images.
 
 This CLI calls the Codex Responses hosted-tool route through the OpenAI SDK by
-default using the local Codex auth snapshot in `~/.codex/auth.json`. The Codex
+default using the local Codex auth snapshot in `~/.codex/auth.json`. The optional
+`--low-memory` mode uses the Python standard library for Responses. The Codex
 Image API generation and edit endpoints remain available through
 `--transport image-api`. Generated images are saved under
 `~/.codex/generated_images_free_reference/<YYYY-MM-DD>/` using the configured
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import json
@@ -25,6 +27,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 from urllib import error, request
@@ -59,6 +62,7 @@ GPT_IMAGE_2_MAX_PIXELS = 8_294_400
 GPT_IMAGE_2_MAX_EDGE = 3840
 GPT_IMAGE_2_MAX_RATIO = 3.0
 CLI_LOG_FORMATS = {"responses-event", "image-jsonl"}
+IMAGE_DECODE_CHUNK_SIZE = 64 * 1024
 
 
 @dataclass
@@ -90,6 +94,7 @@ class RequestConfig:
     hide_response_details: bool
     verbose: bool
     dry_run: bool
+    low_memory: bool = False
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "RequestConfig":
@@ -121,6 +126,7 @@ class RequestConfig:
             hide_response_details=args.hide_response_details,
             verbose=args.verbose,
             dry_run=args.dry_run,
+            low_memory=args.low_memory,
         )
 
     @property
@@ -809,6 +815,8 @@ class Validation:
         Validation.validate_choice(config.output_format, ALLOWED_OUTPUT_FORMATS, "--output-format", logger)
         Validation.validate_choice(config.quality, ALLOWED_QUALITIES, "--quality", logger)
         Validation.validate_choice(config.transport, ALLOWED_TRANSPORTS, "--transport", logger)
+        if config.low_memory and not config.uses_responses_transport:
+            logger.die("--low-memory is only supported with --transport responses or responses-raw.")
         Validation.validate_timezone(config.timezone, logger)
         image_model = config.effective_image_model if config.transport == "image-api" else config.image_model
         Validation.validate_size(config.size, image_model, logger)
@@ -1030,6 +1038,67 @@ class Output:
                 )
             )
         return base64.b64decode(image_b64)
+
+
+class LowMemoryOutput:
+    @staticmethod
+    def image_chunks(image_b64: str) -> Iterator[bytes]:
+        # Base64 groups contain four characters; keep each decode aligned.
+        for offset in range(0, len(image_b64), IMAGE_DECODE_CHUNK_SIZE):
+            yield base64.b64decode(image_b64[offset:offset + IMAGE_DECODE_CHUNK_SIZE])
+    
+    @staticmethod
+    def write_image(image_b64: str, path: Path) -> None:
+        temporary = tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        )
+        temporary_path = Path(temporary.name)
+        try:
+            with temporary as handle:
+                for chunk in LowMemoryOutput.image_chunks(image_b64):
+                    handle.write(chunk)
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    
+    @staticmethod
+    def write_partial_image(
+        item: dict[str, Any],
+        final_path: Path,
+        fallback_index: int,
+        *,
+        logger: Logging,
+        verbose: bool,
+    ) -> Path | None:
+        image_b64 = item.get("partial_image_b64")
+        if not Redaction.looks_like_image_base64(image_b64):
+            return None
+        partial_path = Output.partial_output_path(final_path, Output.partial_index(item, fallback_index))
+        LowMemoryOutput.write_image(image_b64, partial_path)
+        logger.info(f"Wrote partial {partial_path}")
+        return partial_path
+    
+    @staticmethod
+    def write_final_image(
+        image_b64: str,
+        last_partial: Path | None,
+        final_path: Path,
+        *,
+        logger: Logging,
+        verbose: bool,
+    ) -> None:
+        if last_partial:
+            with last_partial.open("rb") as handle:
+                matches = all(handle.read(len(chunk)) == chunk for chunk in LowMemoryOutput.image_chunks(image_b64))
+                matches = matches and not handle.read(1)
+            if matches:
+                last_partial.replace(final_path)
+                logger.debug(
+                    f"Renamed final partial {last_partial} to {final_path}",
+                    verbose=verbose,
+                )
+                return
+        LowMemoryOutput.write_image(image_b64, final_path)
 
 
 class CodexClient:
@@ -1330,6 +1399,195 @@ class ResponsesTransport:
         )
 
 
+class LowMemoryResponsesTransport:
+    def __init__(self, logger: Logging) -> None:
+        self.logger = logger
+    
+    @staticmethod
+    def decode_event(lines: list[bytes], event_type: str) -> dict[str, Any] | None:
+        data = b"\n".join(lines)
+        lines.clear()
+        if data.strip() == b"[DONE]":
+            return None
+        item = json.loads(data)
+        if not isinstance(item, dict):
+            raise ValueError("Expected a JSON object in the Responses event stream.")
+        if event_type:
+            item.setdefault("type", event_type)
+        return item
+    
+    @staticmethod
+    def events(response: Any) -> Iterator[dict[str, Any]]:
+        lines: list[bytes] = []
+        event_type = ""
+        for raw in response:
+            if raw in (b"\n", b"\r\n", b"\r"):
+                if lines:
+                    item = LowMemoryResponsesTransport.decode_event(lines, event_type)
+                    if item is None:
+                        return
+                    yield item
+                    del item
+                event_type = ""
+            elif raw.startswith(b"data:"):
+                start = 6 if raw[5:6] == b" " else 5
+                end = len(raw)
+                while end > start and raw[end - 1] in (10, 13):
+                    end -= 1
+                lines.append(raw[start:end])
+            elif raw.startswith(b"event:"):
+                event_type = raw[6:].strip().decode("utf-8")
+            # Do not retain the wire representation while decoding the event.
+            del raw
+        if lines:
+            item = LowMemoryResponsesTransport.decode_event(lines, event_type)
+            if item is not None:
+                yield item
+    
+    @staticmethod
+    def open_request(req: request.Request, timeout_seconds: float) -> Any:
+        # Retry transient failures up to twice before streaming begins.
+        for attempt in range(3):
+            delay = 0.5 * (2 ** attempt)
+            try:
+                return request.urlopen(req, timeout=timeout_seconds)
+            except error.HTTPError as exc:
+                retry_header = exc.headers.get("x-should-retry")
+                retry = retry_header == "true" or (
+                    retry_header != "false" and (exc.code in {408, 409, 429} or exc.code >= 500)
+                )
+                if not retry or attempt == 2:
+                    raise
+                try:
+                    retry_ms = exc.headers.get("retry-after-ms")
+                    retry_after = float(retry_ms) / 1000 if retry_ms else float(exc.headers.get("Retry-After", "0"))
+                    if 0 < retry_after <= 60:
+                        delay = retry_after
+                except ValueError:
+                    pass
+                exc.close()
+            except (error.URLError, TimeoutError, ConnectionError):
+                if attempt == 2:
+                    raise
+            time.sleep(delay)
+    
+    def run(self, config: RequestConfig, prompt: str, run: RunContext) -> None:
+        last_partial: Path | None = None
+        last_item: Any = None
+        last_output_item_done: Any = None
+        stage = "request"
+        run.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with run.log_path.open("a", encoding="utf-8") as log_handle:
+            self.logger.set_active_handle(log_handle)
+            try:
+                payload = Payloads.build_responses_payload(config, prompt, self.logger)
+                self.logger.write_responses_log_event(
+                    log_handle,
+                    "codex_image_gen.start",
+                    self.logger.start_info(
+                        endpoint=CODEX_RESPONSES_URL,
+                        transport=config.transport,
+                        final_path=run.output_path,
+                        invocation=run.invocation,
+                        inputs=run.inputs,
+                        request_payload=payload,
+                        timeout_seconds=run.timeout_seconds,
+                        client="urllib",
+                    ),
+                )
+                log_handle.flush()
+                if config.transport in DEPRECATED_TRANSPORTS:
+                    self.logger.info("--transport responses-raw is deprecated; use --transport responses.")
+                headers = {
+                    "Authorization": "Bearer " + run.token,
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                    "OpenAI-Beta": DEFAULT_BETA_HEADER,
+                    "User-Agent": "codex-imagegen-free-reference",
+                }
+                if run.account_id:
+                    headers["ChatGPT-Account-ID"] = run.account_id
+                req = request.Request(
+                    CODEX_RESPONSES_URL,
+                    data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                del payload
+                response = self.open_request(req, run.timeout_seconds)
+                # Reference images and the serialized upload are no longer needed.
+                req.data = None
+                del req
+                stage = "stream"
+                partial_count = 0
+                with response:
+                    for item in self.events(response):
+                        try:
+                            last_item = Redaction.responses_stream_item(item)
+                            self.logger.write_responses_log_event(
+                                log_handle, self.logger.responses_event_type(item), item,
+                            )
+                            event_type = item.get("type")
+                            if event_type == "response.output_item.done":
+                                last_output_item_done = last_item
+                            if item.get("error") or event_type in {"error", "response.failed", "response.incomplete"}:
+                                raise ValueError("The server returned a failed or incomplete response.")
+                            if event_type == "response.image_generation_call.partial_image":
+                                if config.save_partials:
+                                    partial_count += 1
+                                    written_partial = LowMemoryOutput.write_partial_image(
+                                        item,
+                                        run.output_path,
+                                        partial_count,
+                                        logger=self.logger,
+                                        verbose=config.verbose,
+                                    )
+                                    if written_partial:
+                                        last_partial = written_partial
+                                continue
+                            image_b64 = Redaction.scan_final_image_base64(item)
+                            if image_b64:
+                                LowMemoryOutput.write_final_image(
+                                    image_b64,
+                                    last_partial,
+                                    run.output_path,
+                                    logger=self.logger,
+                                    verbose=config.verbose,
+                                )
+                                return
+                        finally:
+                            del item
+            except Exception as exc:
+                details: dict[str, Any] = {"error": str(exc), "endpoint": CODEX_RESPONSES_URL}
+                if isinstance(exc, error.HTTPError):
+                    try:
+                        details["status"] = exc.code
+                        details["body"] = exc.read(4000).decode("utf-8", "replace")
+                    finally:
+                        exc.close()
+                self.logger.write_responses_log_event(log_handle, f"response.{stage}_failed", details)
+                self.logger.die(
+                    Redaction.format_stream_failure(
+                        f"Codex Responses {stage} failed: {exc}",
+                        log_path=run.log_path,
+                        last_item=last_item or details,
+                        output_item_done=last_output_item_done,
+                        show_response_details=config.show_response_details,
+                    )
+                )
+            finally:
+                self.logger.set_active_handle(None)
+        self.logger.die(
+            Redaction.format_stream_failure(
+                "No generated image was found in the streamed response.",
+                log_path=run.log_path,
+                last_item=last_item,
+                output_item_done=last_output_item_done,
+                show_response_details=config.show_response_details,
+            )
+        )
+
+
 class ImageApiTransport:
     def __init__(self, logger: Logging) -> None:
         self.logger = logger
@@ -1593,6 +1851,14 @@ class Cli:
             ),
         )
         parser.add_argument(
+            "--low-memory",
+            action="store_true",
+            help=(
+                "Use standard-library streaming and chunked image saving for Responses transports. "
+                "Opt-in; the default responses path uses the OpenAI SDK."
+            ),
+        )
+        parser.add_argument(
             "--model",
             help=(
                 "Model for the selected transport. Responses resolves the current Codex "
@@ -1689,6 +1955,7 @@ class Cli:
                 "output": str(out_path),
                 "log": str(Paths.log_path(out_path)),
                 "transport": config.transport,
+                "low_memory": config.low_memory,
                 "deprecated": config.transport in DEPRECATED_TRANSPORTS,
                 "timeout_seconds": config.timeout_seconds,
                 "timezone": config.timezone,
@@ -1726,7 +1993,10 @@ class Cli:
         )
 
         final_written = False
-        if config.uses_responses_transport:
+        if config.low_memory:
+            LowMemoryResponsesTransport(self.logger).run(config, prompt, run)
+            final_written = True
+        elif config.uses_responses_transport:
             payload = Payloads.build_responses_payload(config, prompt, self.logger)
             responses = ResponsesTransport(self.logger)
             if config.transport in DEPRECATED_TRANSPORTS:
@@ -1735,7 +2005,7 @@ class Cli:
                 image_bytes, final_written = responses.stream_sdk(payload, run, config)
         else:
             image_bytes = ImageApiTransport(self.logger).run(config, prompt, run)
-
+        
         if not final_written:
             out_path.write_bytes(image_bytes)
         self.logger.info(f"Wrote {out_path}")

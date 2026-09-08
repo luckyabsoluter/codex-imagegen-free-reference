@@ -82,6 +82,22 @@ Important observations:
 - Omitted Responses `--model` values are resolved from `models_cache.json` beside the selected Codex auth/output root. If that cache is missing or has no visible model, pass `--model` explicitly or run Codex to refresh its model catalog.
 - If none of those auth files is available, the CLI exits with a configuration error. It does not require `OPENAI_API_KEY`.
 
+## Optional low-memory mode
+
+Add `--low-memory` to explicitly select the memory-optimized Responses implementation:
+
+```bash
+.venv/bin/python scripts/codex_image_gen.py --prompt "A mountain landscape" --low-memory
+```
+
+On Windows, use `.venv\Scripts\python.exe` as the interpreter.
+
+Without this option, `--transport responses` uses the OpenAI SDK. With it, the CLI uses `urllib` with the same Codex endpoint, authentication, and image controls. It releases uploaded reference data before consuming the response, processes one SSE event at a time, and decodes output images in 64 KiB Base64 chunks. Preview comparisons read the saved file in chunks, so preview image bytes are not retained in memory. Memory still scales with the reference payload and the largest JSON event.
+
+Low-memory image saves use a temporary file beside the destination and replace the destination only after decoding and writing succeed. Failed saves preserve any existing destination and remove the temporary file.
+
+This option supports `responses` and the deprecated `responses-raw` transport; `image-api` rejects it. The low-memory implementation handles SSE parsing and retries directly. It retries transient connection failures and retryable HTTP errors up to twice before streaming begins; interrupted streams are not retried. Dry-run previews report the selected mode with `low_memory`.
+
 ## Why this path is recommended here
 
 The default built-in image path is convenient when the harness exposes the `image_gen` tool, but it has two practical limits for this skill package:
@@ -223,7 +239,7 @@ Validation notes:
 - `--background transparent` requires `png` or `webp`, a transparency-capable image model, and not `gpt-image-2*`.
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
 - `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. Partial image previews are not completed images and must not be used as final artifacts. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
-- `--timeout` applies to the raw Responses fallback, SDK Responses calls, Image API generation, and Image API edit requests.
+- `--timeout` applies to the raw Responses fallback, SDK Responses calls, low-memory Responses calls, Image API generation, and Image API edit requests.
 - `--timezone` changes only the date used for the output directory. It is a fixed offset and does not resolve regional daylight-saving rules. Decimal-hour notation such as `1.5`, invalid minutes, and values outside `-12:00` through `+14:00` are rejected before output path selection or network access.
 - `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the resolved model and server defaults apply. Codex's documented default Power setting is currently `gpt-5.6-sol` with medium reasoning. GPT-5.6 Sol supports `none`, `low`, `medium`, `high`, `xhigh`, and `max` through the API; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
 - `--hide-response-details` prevents `Last event` and `Output item done` JSON from being printed into the caller context on failures; inspect the redacted log file when those details are needed.
