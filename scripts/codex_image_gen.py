@@ -18,6 +18,7 @@ import base64
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 import json
 import mimetypes
 import os
@@ -40,6 +41,8 @@ CODEX_IMAGE_EDITS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/edits"
 CODEX_RESPONSES_URL = f"{CODEX_IMAGE_API_BASE_URL}/responses"
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_OUTPUT_FORMAT = "png"
+DEFAULT_PARTIAL_JPEG_QUALITY = 90
+DEFAULT_PARTIAL_BACKGROUND = "white"
 DEFAULT_BETA_HEADER = "responses=2025-06-21"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600
 HELP_FORMATTER_WIDTH = 120
@@ -95,6 +98,9 @@ class RequestConfig:
     verbose: bool
     dry_run: bool
     low_memory: bool = False
+    partial_output_format: str | None = None
+    partial_output_compression: int | None = None
+    partial_background: str | None = None
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "RequestConfig":
@@ -127,6 +133,9 @@ class RequestConfig:
             verbose=args.verbose,
             dry_run=args.dry_run,
             low_memory=args.low_memory,
+            partial_output_format=args.partial_output_format,
+            partial_output_compression=args.partial_output_compression,
+            partial_background=args.partial_background,
         )
 
     @property
@@ -832,6 +841,7 @@ class Validation:
 
         if config.partial_images is not None and (config.partial_images < 0 or config.partial_images > 3):
             logger.die("--partial-images must be between 0 and 3.")
+        PartialJpeg.validate(config, logger)
 
         if config.background == "transparent":
             if config.output_format not in {"png", "webp"}:
@@ -940,10 +950,75 @@ class Payloads:
         return payload
 
 
+class PartialJpeg:
+    @staticmethod
+    def background_color(value: str) -> tuple[int, int, int] | None:
+        from PIL import ImageColor
+        
+        if value.lower() == "checkerboard":
+            return None
+        rgba = ImageColor.getcolor(value, "RGBA")
+        if rgba[3] != 255:
+            raise ValueError("The JPEG background must be opaque.")
+        return rgba[:3]
+    
+    @staticmethod
+    def validate(config: RequestConfig, logger: Logging) -> None:
+        Validation.validate_choice(config.partial_output_format, {"jpg", "jpeg"}, "--partial-output-format", logger)
+        if config.partial_output_compression is not None:
+            if not 0 <= config.partial_output_compression <= 100:
+                logger.die("--partial-output-compression must be between 0 and 100.")
+        if config.partial_output_compression is not None or config.partial_background is not None:
+            if not config.partial_output_format:
+                logger.die("--partial-output-compression and --partial-background require --partial-output-format jpg.")
+        if not config.partial_output_format:
+            return
+        if not config.save_partials:
+            logger.die("--partial-output-format requires --partial-images between 1 and 3.")
+        try:
+            from PIL import Image, ImageDraw
+            
+            PartialJpeg.background_color(config.partial_background or DEFAULT_PARTIAL_BACKGROUND)
+        except ImportError:
+            logger.die("Partial JPEG output requires Pillow. Install it with: python -m pip install Pillow")
+        except ValueError:
+            logger.die("--partial-background must be an opaque color name, HEX color, or checkerboard.")
+    
+    @staticmethod
+    def write(source: Any, path: Path, config: RequestConfig) -> None:
+        from PIL import Image, ImageDraw
+        
+        color = PartialJpeg.background_color(config.partial_background or DEFAULT_PARTIAL_BACKGROUND)
+        quality = config.partial_output_compression
+        if quality is None:
+            quality = DEFAULT_PARTIAL_JPEG_QUALITY
+        with Image.open(source) as image, image.convert("RGBA") as rgba:
+            with Image.new("RGB", rgba.size, color if color is not None else "white") as canvas:
+                if color is None:
+                    draw = ImageDraw.Draw(canvas)
+                    cell = 16
+                    for y in range(0, canvas.height, cell):
+                        for x in range((1 - (y // cell) % 2) * cell, canvas.width, cell * 2):
+                            draw.rectangle((x, y, x + cell - 1, y + cell - 1), fill="#cccccc")
+                with rgba.getchannel("A") as alpha:
+                    canvas.paste(rgba, (0, 0), alpha)
+                temporary = tempfile.NamedTemporaryFile(
+                    mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+                )
+                temporary_path = Path(temporary.name)
+                try:
+                    with temporary as handle:
+                        canvas.save(handle, format="JPEG", quality=quality)
+                    temporary_path.replace(path)
+                finally:
+                    temporary_path.unlink(missing_ok=True)
+
+
 class Output:
     @staticmethod
-    def partial_output_path(final_path: Path, index: int | str) -> Path:
-        return final_path.with_name(f"{final_path.stem}-partial-{index}{final_path.suffix}")
+    def partial_output_path(final_path: Path, index: int | str, output_format: str | None = None) -> Path:
+        suffix = ".jpg" if output_format in {"jpg", "jpeg"} else final_path.suffix
+        return final_path.with_name(f"{final_path.stem}-partial-{index}{suffix}")
 
     @staticmethod
     def copy_result(source: Path, destination: str, *, force: bool, logger: Logging) -> Path:
@@ -971,15 +1046,25 @@ class Output:
         *,
         logger: Logging,
         verbose: bool,
+        config: RequestConfig,
     ) -> tuple[Path, bytes] | None:
+        """Save a preview; return comparison data only for unconverted image bytes."""
         image_b64 = item.get("partial_image_b64")
         if not Redaction.looks_like_image_base64(image_b64):
             return None
         image_bytes = base64.b64decode(image_b64)
-        partial_path = Output.partial_output_path(final_path, Output.partial_index(item, fallback_index))
-        partial_path.write_bytes(image_bytes)
+        partial_path = Output.partial_output_path(
+            final_path, Output.partial_index(item, fallback_index), config.partial_output_format,
+        )
+        comparable_partial = None
+        if config.partial_output_format:
+            with BytesIO(image_bytes) as source:
+                PartialJpeg.write(source, partial_path, config)
+        else:
+            partial_path.write_bytes(image_bytes)
+            comparable_partial = partial_path, image_bytes
         logger.info(f"Wrote partial {partial_path}")
-        return partial_path, image_bytes
+        return comparable_partial
 
     @staticmethod
     def final_image_bytes(
@@ -1069,14 +1154,27 @@ class LowMemoryOutput:
         *,
         logger: Logging,
         verbose: bool,
+        config: RequestConfig,
     ) -> Path | None:
+        """Save a preview; return a comparison path only for unconverted image bytes."""
         image_b64 = item.get("partial_image_b64")
         if not Redaction.looks_like_image_base64(image_b64):
             return None
-        partial_path = Output.partial_output_path(final_path, Output.partial_index(item, fallback_index))
-        LowMemoryOutput.write_image(image_b64, partial_path)
+        partial_path = Output.partial_output_path(
+            final_path, Output.partial_index(item, fallback_index), config.partial_output_format,
+        )
+        comparable_partial = None
+        if config.partial_output_format:
+            with tempfile.TemporaryFile(mode="w+b", dir=partial_path.parent) as source:
+                for chunk in LowMemoryOutput.image_chunks(image_b64):
+                    source.write(chunk)
+                source.seek(0)
+                PartialJpeg.write(source, partial_path, config)
+        else:
+            LowMemoryOutput.write_image(image_b64, partial_path)
+            comparable_partial = partial_path
         logger.info(f"Wrote partial {partial_path}")
-        return partial_path
+        return comparable_partial
     
     @staticmethod
     def write_final_image(
@@ -1233,15 +1331,16 @@ class ResponsesTransport:
                     and item.get("type") == "response.image_generation_call.partial_image"
                 ):
                     partial_count += 1
-                    written_partial = Output.write_partial_image(
+                    comparable_partial = Output.write_partial_image(
                         item,
                         run.output_path,
                         partial_count,
                         logger=self.logger,
                         verbose=config.verbose,
+                        config=config,
                     )
-                    if written_partial:
-                        last_partial = written_partial
+                    if comparable_partial:
+                        last_partial = comparable_partial
                     continue
                 image_b64 = Redaction.scan_final_image_base64(item)
                 if image_b64:
@@ -1342,15 +1441,16 @@ class ResponsesTransport:
                     and item.get("type") == "response.image_generation_call.partial_image"
                 ):
                     partial_count += 1
-                    written_partial = Output.write_partial_image(
+                    comparable_partial = Output.write_partial_image(
                         item,
                         run.output_path,
                         partial_count,
                         logger=self.logger,
                         verbose=config.verbose,
+                        config=config,
                     )
-                    if written_partial:
-                        last_partial = written_partial
+                    if comparable_partial:
+                        last_partial = comparable_partial
                     continue
                 image_b64 = Redaction.scan_final_image_base64(item)
                 if image_b64:
@@ -1535,15 +1635,16 @@ class LowMemoryResponsesTransport:
                             if event_type == "response.image_generation_call.partial_image":
                                 if config.save_partials:
                                     partial_count += 1
-                                    written_partial = LowMemoryOutput.write_partial_image(
+                                    comparable_partial = LowMemoryOutput.write_partial_image(
                                         item,
                                         run.output_path,
                                         partial_count,
                                         logger=self.logger,
                                         verbose=config.verbose,
+                                        config=config,
                                     )
-                                    if written_partial:
-                                        last_partial = written_partial
+                                    if comparable_partial:
+                                        last_partial = comparable_partial
                                 continue
                             image_b64 = Redaction.scan_final_image_base64(item)
                             if image_b64:
@@ -1691,9 +1792,10 @@ class ImageApiTransport:
                             partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
                         if Redaction.looks_like_image_base64(partial_b64):
                             partial_count += 1
-                            partial_path = Output.partial_output_path(run.output_path, partial_count)
-                            partial_path.write_bytes(base64.b64decode(partial_b64))
-                            self.logger.info(f"Wrote partial {partial_path}")
+                            Output.write_partial_image(
+                                {"partial_image_b64": partial_b64}, run.output_path, partial_count,
+                                logger=self.logger, verbose=config.verbose, config=config,
+                            )
                             continue
                     image_b64 = Redaction.scan_final_image_base64(item)
                     if image_b64:
@@ -1740,9 +1842,10 @@ class ImageApiTransport:
                         partial_b64 = item.get("b64_json") if "partial" in str(item.get("type", "")) else None
                     if Redaction.looks_like_image_base64(partial_b64):
                         partial_count += 1
-                        partial_path = Output.partial_output_path(run.output_path, partial_count)
-                        partial_path.write_bytes(base64.b64decode(partial_b64))
-                        self.logger.info(f"Wrote partial {partial_path}")
+                        Output.write_partial_image(
+                            {"partial_image_b64": partial_b64}, run.output_path, partial_count,
+                            logger=self.logger, verbose=config.verbose, config=config,
+                        )
                         continue
                 image_b64 = Redaction.scan_final_image_base64(item)
                 if image_b64:
@@ -1884,6 +1987,18 @@ class Cli:
         parser.add_argument("--action", help="Optional image tool action: generate, edit, or auto.")
         parser.add_argument("--partial-images", type=int, help="Number of streamed partial images to request, 0-3.")
         parser.add_argument(
+            "--partial-output-format", choices=("jpg", "jpeg"),
+            help="Locally save partial previews as .jpg files; requires --partial-images 1-3 and Pillow.",
+        )
+        parser.add_argument(
+            "--partial-output-compression", type=int,
+            help="Partial JPEG quality 0-100 (higher means better quality/larger files; default: 90), independent of API compression.",
+        )
+        parser.add_argument(
+            "--partial-background",
+            help="Partial JPEG transparency background: color name, HEX, or checkerboard (default: white).",
+        )
+        parser.add_argument(
             "--timeout",
             type=float,
             default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -1948,6 +2063,14 @@ class Cli:
         return text
 
     def dry_run_preview(self, config: RequestConfig, prompt: str, out_path: Path) -> dict[str, Any]:
+        local_output = {}
+        if config.partial_output_format:
+            local_output["partial_output"] = {
+                "format": "jpg",
+                "compression": config.partial_output_compression
+                if config.partial_output_compression is not None else DEFAULT_PARTIAL_JPEG_QUALITY,
+                "background": config.partial_background or DEFAULT_PARTIAL_BACKGROUND,
+            }
         if config.uses_responses_transport:
             payload = Payloads.build_responses_payload(config, prompt, self.logger)
             return {
@@ -1959,6 +2082,7 @@ class Cli:
                 "deprecated": config.transport in DEPRECATED_TRANSPORTS,
                 "timeout_seconds": config.timeout_seconds,
                 "timezone": config.timezone,
+                **local_output,
                 **Redaction.responses_preview(payload),
             }
         options = Payloads.build_image_api_options(config, prompt)
@@ -1970,6 +2094,7 @@ class Cli:
             "log": str(Paths.log_path(out_path)),
             "timeout_seconds": config.timeout_seconds,
             "timezone": config.timezone,
+            **local_output,
             **Redaction.image_api_preview(config, options),
         }
 

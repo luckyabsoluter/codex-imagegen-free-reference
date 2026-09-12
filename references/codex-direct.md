@@ -98,6 +98,8 @@ Low-memory image saves use a temporary file beside the destination and replace t
 
 This option supports `responses` and the deprecated `responses-raw` transport; `image-api` rejects it. The low-memory implementation handles SSE parsing and retries directly. It retries transient connection failures and retryable HTTP errors up to twice before streaming begins; interrupted streams are not retried. Dry-run previews report the selected mode with `low_memory`.
 
+When local partial JPEG output is enabled, low-memory mode decodes the source into a temporary file beside the output before converting it. Pillow still needs decoded pixel buffers for JPEG encoding and background compositing, so memory also scales with preview dimensions. No decoded preview buffers are retained between events.
+
 ## Why this path is recommended here
 
 The default built-in image path is convenient when the harness exposes the `image_gen` tool, but it has two practical limits for this skill package:
@@ -222,6 +224,9 @@ The Codex direct CLI exposes Image API controls without using `OPENAI_API_KEY`.
 - `--moderation auto|low`
 - `--action generate|edit|auto`
 - `--partial-images 0..3`
+- `--partial-output-format jpg|jpeg`, locally encoding partial previews as `.jpg` files; requires `--partial-images 1..3` and Pillow
+- `--partial-output-compression 0..100`, independent local JPEG quality (default `90`); higher values mean better quality and generally larger files
+- `--partial-background <color|checkerboard>`, the local JPEG transparency background (default `white`); accepts opaque color names and quoted HEX values such as `"#e8eef5"`
 - `--timeout <seconds>`, defaulting to `600`
 - `--timezone <offset>`, a fixed UTC offset from `-12:00` through `+14:00` used for the dated output directory; accepted examples are `1:30`, `01:00`, `1`, `+01:00`, and `-01:00`
 - `--reasoning-effort <value>`, added to Responses payloads as `reasoning: { "effort": <value> }` only when provided
@@ -238,7 +243,10 @@ Validation notes:
 - For other explicit image models, the CLI performs local syntax validation only.
 - `--background transparent` requires `png` or `webp`, a transparency-capable image model, and not `gpt-image-2*`.
 - `--input-fidelity` is rejected for `gpt-image-1-mini` and `gpt-image-2*`. For `gpt-image-2`, omit the flag because the model already processes every image input at high fidelity and the API does not allow changing it.
-- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. Partial image previews are not completed images and must not be used as final artifacts. If the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
+- `--partial-images` writes preview files next to the Codex-home original as `<final-stem>-partial-<index>.<ext>` when the selected transport streams previews. Partial image previews are not completed images and must not be used as final artifacts. Without local JPEG conversion, if the last partial image is byte-identical to the completed image, the CLI renames that partial file to the final output path instead of writing a duplicate; `--copy-to` copies only the completed final image.
+- `--partial-output-format jpg` (or `jpeg`) saves local previews as `<final-stem>-partial-<index>.jpg` and retains them when the completed image arrives. The final output keeps the exact bytes received from the API. Local JPEG settings are never sent to the API and do not change `--output-format`, `--output-compression`, or `--background`. They apply to Responses (SDK, raw, and low-memory) and streaming Image API generation; Image API edits do not support partial streaming.
+- `--partial-output-compression` and `--partial-background` require `--partial-output-format jpg|jpeg`. JPEG conversion requires Pillow in the active Python environment (`python -m pip install Pillow`). Invalid settings or missing Pillow fail before output creation and authentication. Omitting the conversion option keeps the original partial-saving behavior without requiring Pillow.
+- Partial JPEG backgrounds fill only transparent or semi-transparent areas. `checkerboard` selects 16-pixel white and light-gray (`#cccccc`) squares; named and HEX colors must be opaque. Dry-run output reports these local settings under `partial_output` separately from API request fields.
 - `--timeout` applies to the raw Responses fallback, SDK Responses calls, low-memory Responses calls, Image API generation, and Image API edit requests.
 - `--timezone` changes only the date used for the output directory. It is a fixed offset and does not resolve regional daylight-saving rules. Decimal-hour notation such as `1.5`, invalid minutes, and values outside `-12:00` through `+14:00` are rejected before output path selection or network access.
 - `--reasoning-effort` is omitted from the request when the CLI option is not provided, letting the resolved model and server defaults apply. Codex's documented default Power setting is currently `gpt-5.6-sol` with medium reasoning. GPT-5.6 Sol supports `none`, `low`, `medium`, `high`, `xhigh`, and `max` through the API; other models can differ, and additional values may become available, so the CLI does not restrict the value. Check each model page and https://developers.openai.com/api/docs/guides/reasoning when selecting an effort.
