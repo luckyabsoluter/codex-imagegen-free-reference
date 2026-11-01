@@ -202,7 +202,12 @@ class PartialJpegTests(unittest.TestCase):
                     stream.__iter__.return_value = iter(events)
                     client = mock.Mock()
                     client.responses.create.return_value = stream
-                    client.images.generate.return_value = stream
+                    image_response = mock.MagicMock()
+                    image_response.headers = {"content-type": "text/event-stream"}
+                    image_response.parse.return_value = stream
+                    image_context = mock.MagicMock()
+                    image_context.__enter__.return_value = image_response
+                    client.images.with_streaming_response.generate.return_value = image_context
                     response = BytesIO(b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events))
                     with (
                         mock.patch.object(image_gen.Paths, "read_codex_auth", return_value=("offline-test-token", None)),

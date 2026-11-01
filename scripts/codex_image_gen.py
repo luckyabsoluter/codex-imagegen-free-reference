@@ -1894,7 +1894,37 @@ class ImageApiTransport:
         self.logger.configure(run.log_path, "image-jsonl")
         self.logger.write_image_api_start_log(run.log_path, start_info)
         try:
-            response = client.images.generate(**options, timeout=run.timeout_seconds)
+            with client.images.with_streaming_response.generate(**options, timeout=run.timeout_seconds) as response:
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type == "text/event-stream":
+                    return self.stream_response(response.parse(), run, config)
+                try:
+                    data = response.json()
+                except (ValueError, UnicodeError) as exc:
+                    failure = self.logger.write_image_api_failure_log(
+                        run.log_path,
+                        status_code=response.status_code,
+                        response_text=response.text(),
+                        error_message=f"Could not parse image JSON response ({content_type or 'missing Content-Type'}): {exc}",
+                    )
+                    self.logger.die(
+                        Redaction.format_stream_failure(
+                            "Codex Image API response was not valid JSON.",
+                            log_path=run.log_path,
+                            last_item=failure,
+                            show_response_details=config.show_response_details,
+                        )
+                    )
+                self.logger.write_image_api_response_log(run.log_path, data, status="received")
+                image = Output.image_response_bytes(
+                    data,
+                    logger=self.logger,
+                    log_path=run.log_path,
+                    show_response_details=config.show_response_details,
+                )
+                if options.get("stream"):
+                    self.logger.info("The Image API returned a final JSON image instead of streamed partial previews.")
+                return image
         except Exception as exc:
             failure = self.logger.write_image_api_failure_log(
                 run.log_path,
@@ -1908,16 +1938,6 @@ class ImageApiTransport:
                     show_response_details=config.show_response_details,
                 )
             )
-
-        if options.get("stream"):
-            return self.stream_response(response, run, config)
-        self.logger.write_image_api_response_log(run.log_path, response, status="completed")
-        return Output.image_response_bytes(
-            response,
-            logger=self.logger,
-            log_path=run.log_path,
-            show_response_details=config.show_response_details,
-        )
 
 
 class Cli:
