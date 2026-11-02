@@ -33,13 +33,15 @@ class ImageApiResponseFormatTests(unittest.TestCase):
         self.response = None
         self.request = None
     
-    def execute(self, body: bytes, content_type: str, *, status: int = 200, partials: bool = True) -> int:
+    def execute(self, body: bytes, content_type: str, *, status: int = 200, partials: bool = True, model: bool = True) -> int:
         def respond(request: httpx.Request) -> httpx.Response:
             self.request = json.loads(request.content)
             self.response = httpx.Response(status, headers={"Content-Type": content_type}, content=body)
             return self.response
         
-        argv = ["--transport", "image-api", "--image-model", "gpt-image-2", "--prompt", "test", "--copy-to", str(self.copy)]
+        argv = ["--transport", "image-api", "--prompt", "test", "--copy-to", str(self.copy)]
+        if model:
+            argv += ["--image-model", "gpt-image-2"]
         if partials:
             argv += ["--partial-images", "3"]
         cli = image_gen.Cli()
@@ -80,6 +82,26 @@ class ImageApiResponseFormatTests(unittest.TestCase):
         self.assertNotIn("stream", self.request)
         self.assertEqual(self.final.read_bytes(), self.image)
         self.assertNotIn("instead of streamed", self.stdout.getvalue())
+    
+    def test_omitted_model_is_absent_from_sdk_request(self) -> None:
+        self.assertEqual(self.execute(self.json_image(), "application/json", model=False), 0)
+        self.assertNotIn("model", self.request)
+        self.assertEqual(self.final.read_bytes(), self.image)
+        self.assertEqual(self.copy.read_bytes(), self.image)
+    
+    def test_explicit_image_api_model_precedence(self) -> None:
+        cases = [([], None), (["--model", "image-base"], "image-base"),
+                 (["--model", "image-base", "--image-model", "image-override"], "image-override")]
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                config = image_gen.Cli().parse_config(["--transport", "image-api", "--prompt", "test", *arguments])
+                options = image_gen.Payloads.build_image_api_options(config, "test")
+                edit = image_gen.Payloads.build_image_api_edit_payload(config, "test", image_gen.Logging())
+                for payload in (options, edit):
+                    if expected is None:
+                        self.assertNotIn("model", payload)
+                    else:
+                        self.assertEqual(payload["model"], expected)
     
     def test_sse_partial_and_final_images_remain_supported(self) -> None:
         partial = base64.b64encode(b"partial-image" * 1000).decode()

@@ -22,7 +22,11 @@ It uses the same hosted-tool shape used by Codex itself: `ToolSpec::ImageGenerat
 
 The model shown is the current documented Codex default and is illustrative, not pinned by this project. If `--model` is omitted, the CLI resolves the visible model with the highest cache priority from the selected Codex home's `models_cache.json` and sends it explicitly because the ChatGPT-account endpoint rejects model-less requests.
 
-The Codex Image API namespace remains available when explicitly requested with `--transport image-api`. Prompt-only generation goes to:
+The Codex Image API namespace remains available when explicitly requested with `--transport image-api`.
+
+For Image API requests, `--image-model` overrides `--model`. If neither option is supplied, the request omits the model field and uses the server-selected default.
+
+Prompt-only generation goes to:
 
 ```text
 https://chatgpt.com/backend-api/codex/images/generations

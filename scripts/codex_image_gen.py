@@ -39,7 +39,6 @@ CODEX_IMAGE_API_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_IMAGE_GENERATIONS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/generations"
 CODEX_IMAGE_EDITS_URL = f"{CODEX_IMAGE_API_BASE_URL}/images/edits"
 CODEX_RESPONSES_URL = f"{CODEX_IMAGE_API_BASE_URL}/responses"
-DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_PARTIAL_JPEG_QUALITY = 90
 DEFAULT_PARTIAL_BACKGROUND = "white"
@@ -139,8 +138,8 @@ class RequestConfig:
         )
 
     @property
-    def effective_image_model(self) -> str:
-        return self.image_model or self.model or DEFAULT_IMAGE_MODEL
+    def effective_image_model(self) -> str | None:
+        return self.image_model or self.model
 
     @property
     def timeout_seconds(self) -> float:
@@ -916,12 +915,12 @@ class Payloads:
     @staticmethod
     def build_image_api_options(config: RequestConfig, prompt: str) -> dict[str, Any]:
         options: dict[str, Any] = {
-            "model": config.effective_image_model,
             "prompt": prompt,
             "output_format": config.output_format,
             "response_format": "b64_json",
         }
         optional_fields = {
+            "model": config.effective_image_model,
             "background": config.background,
             "input_fidelity": config.input_fidelity if config.uses_image_edit_endpoint else None,
             "moderation": config.moderation,
@@ -1985,7 +1984,7 @@ class Cli:
             "--model",
             help=(
                 "Model for the selected transport. Responses resolves the current Codex "
-                "model cache when omitted; image-api defaults to gpt-image-2."
+                "model cache when omitted; image-api omits the model to use the server default."
             ),
         )
         parser.add_argument(
