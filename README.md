@@ -42,6 +42,10 @@ To enable low-memory mode, add `--low-memory` to your usual Responses command:
 
 On Windows, use `.venv\Scripts\python.exe` as the interpreter.
 
+### Known issue: explicit Responses reasoning effort
+
+Explicit `--reasoning-effort` caused image complexity errors with `gpt-6-luna` on the Codex Responses route. Omit it for normal generation; omission succeeded with partial previews and a final image. The option remains available. See [RESP-001](references/known-issues.md#resp-001-responses-reasoning-effort-causes-image-complexity-errors) for results and required rechecks after backend, model, or SDK changes.
+
 ### Partial JPEG previews
 
 Use `--partial-output-format jpg` with `--partial-images 1..3` to encode previews locally as `.jpg` files. This requires Pillow in the CLI's Python environment (`python -m pip install Pillow`).
